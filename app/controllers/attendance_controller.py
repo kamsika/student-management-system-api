@@ -8,11 +8,12 @@ from app.utils.alert_engine import calculate_attendance_status, process_late_ale
 
 def mark_attendance(data, user):
     student_id = data.get("student_id")
+    registration_no = (data.get("registration_no") or "").strip()
     classroom_id = data.get("classroom_id")
     status_override = data.get("status")
 
-    if not student_id or not classroom_id:
-        return {"errors": ["student_id and classroom_id are required"]}, 400
+    if not classroom_id:
+        return {"errors": ["classroom_id is required"]}, 400
 
     classroom = Classroom.query.get(classroom_id)
     if not classroom:
@@ -21,12 +22,34 @@ def mark_attendance(data, user):
     if user.role == "teacher" and classroom.teacher_id != user.id:
         return {"errors": ["Access denied"]}, 403
 
-    student = Student.query.get(student_id)
+    student = None
+    if student_id:
+        student = Student.query.get(student_id)
+    elif registration_no:
+        student = Student.query.filter_by(
+            institution_id=classroom.institution_id,
+            registration_no=registration_no,
+        ).first()
+
+    if not student_id and not registration_no:
+        return {"errors": ["student_id or registration_no is required"]}, 400
+
     if not student or student.institution_id != classroom.institution_id:
         return {"errors": ["Student not found"]}, 404
 
+    student_id = student.id
     today = utc_now().date()
-    arrival_time = utc_now()
+
+    scanned_at_raw = data.get("scanned_at")
+    if scanned_at_raw:
+        try:
+            arrival_time = datetime.fromisoformat(str(scanned_at_raw).replace("Z", "+00:00"))
+            if arrival_time.tzinfo is not None:
+                arrival_time = arrival_time.replace(tzinfo=None)
+        except (TypeError, ValueError):
+            arrival_time = utc_now()
+    else:
+        arrival_time = utc_now()
 
     if status_override in ("Present", "Absent", "Late"):
         status = status_override
