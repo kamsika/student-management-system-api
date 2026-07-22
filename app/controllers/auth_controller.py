@@ -16,7 +16,7 @@ def login_user(data):
 
     user = User.query.filter_by(email=email).first()
     if not user or not user.check_password(password):
-        return {"errors": ["Invalid credentials"]}, 401
+        return {"errors": ["Invalid email or password"]}, 401
 
     if not user.is_active:
         return {"errors": ["Account is deactivated"]}, 403
@@ -37,6 +37,20 @@ def login_user(data):
         "access_token": token,
         "user": user.to_dict(include_institution=True),
     }, 200
+
+
+def get_authenticated_user(user):
+    if not user:
+        return {"errors": ["Unauthorized"]}, 401
+
+    if not user.is_active:
+        return {"errors": ["Account is deactivated"]}, 403
+
+    if user.role != "super_admin" and user.institution:
+        if user.institution.status == "Suspended":
+            return {"errors": ["Institution is suspended"]}, 403
+
+    return {"user": user.to_dict(include_institution=True)}, 200
 
 
 def register_institution(data):
