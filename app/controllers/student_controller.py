@@ -1,6 +1,7 @@
 from app.extensions import db
-from app.models import Student, User
+from app.models import Institution, Student, User
 from app.utils.csv_utils import parse_students_csv, generate_students_template_csv
+from app.utils.student_id_utils import build_placeholder_emails, generate_next_registration_no
 
 
 def list_students(user):
@@ -110,3 +111,80 @@ def list_teachers(user):
 
     teachers = query.all()
     return {"teachers": [t.to_dict() for t in teachers]}, 200
+
+
+def create_student(data, user, default_password="Student@123"):
+    if user.role != "institution_admin":
+        return {"errors": ["Access denied"]}, 403
+
+    full_name = (data.get("full_name") or data.get("name") or "").strip()
+    grade = (data.get("grade") or "").strip() or None
+    section = (data.get("section") or "").strip() or None
+    gender = (data.get("gender") or "").strip() or None
+    contact = (data.get("contact") or data.get("contact_number") or "").strip() or None
+
+    if not full_name:
+        return {"errors": ["Name is required"]}, 400
+
+    if gender and gender not in ("Male", "Female", "Other"):
+        return {"errors": ["Gender must be Male, Female, or Other"]}, 400
+
+    institution = Institution.query.get(user.institution_id)
+    subdomain = institution.subdomain if institution else "school"
+    registration_no = generate_next_registration_no(user.institution_id)
+    student_email, parent_email = build_placeholder_emails(registration_no, subdomain)
+
+    suffix = 1
+    while User.query.filter_by(email=student_email).first():
+        student_email = student_email.replace("@", f"+{suffix}@", 1)
+        suffix += 1
+
+    suffix = 1
+    while User.query.filter_by(email=parent_email).first():
+        parent_email = parent_email.replace("@", f"+{suffix}@", 1)
+        suffix += 1
+
+    try:
+        parent = User(
+            institution_id=user.institution_id,
+            email=parent_email,
+            role="parent",
+            full_name=f"Guardian of {full_name}",
+            phone_number=contact,
+            is_active=True,
+        )
+        parent.set_password(default_password)
+        db.session.add(parent)
+        db.session.flush()
+
+        student_user = User(
+            institution_id=user.institution_id,
+            email=student_email,
+            role="student",
+            full_name=full_name,
+            phone_number=contact,
+            is_active=True,
+        )
+        student_user.set_password(default_password)
+        db.session.add(student_user)
+        db.session.flush()
+
+        student = Student(
+            institution_id=user.institution_id,
+            user_id=student_user.id,
+            parent_id=parent.id,
+            registration_no=registration_no,
+            grade=grade,
+            section=section,
+            gender=gender,
+        )
+        db.session.add(student)
+        db.session.commit()
+
+        return {
+            "student": student.to_dict(),
+            "message": f"Student {registration_no} created successfully",
+        }, 201
+    except Exception:
+        db.session.rollback()
+        return {"errors": ["Failed to create student"]}, 500
