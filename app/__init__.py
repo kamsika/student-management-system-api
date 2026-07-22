@@ -84,6 +84,7 @@ def create_app(config_class=Config):
         _ensure_database_exists(app)
         db.create_all()
         _seed_super_admin(app)
+        _seed_demo_data(app)
 
     if not scheduler.running:
         scheduler.add_job(
@@ -122,3 +123,12 @@ def _seed_super_admin(app):
         admin.set_password("SuperAdmin@123")
         db.session.add(admin)
         db.session.commit()
+
+
+def _seed_demo_data(app):
+    from app.seeders.demo_seeder import seed_demo_data
+
+    try:
+        seed_demo_data(force=False)
+    except Exception:
+        db.session.rollback()
