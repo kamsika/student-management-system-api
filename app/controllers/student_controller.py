@@ -61,6 +61,7 @@ def import_students(file_content, user, default_password="Student@123"):
             email=student_email,
             role="student",
             full_name=row["full_name"],
+            phone_number=row.get("contact") or row.get("phone") or None,
             is_active=True,
         )
         student_user.set_password(default_password)
@@ -72,6 +73,9 @@ def import_students(file_content, user, default_password="Student@123"):
             user_id=student_user.id,
             parent_id=parent.id,
             registration_no=reg_no,
+            grade=row.get("grade") or None,
+            section=row.get("section") or None,
+            gender=row.get("gender") or None,
         )
         db.session.add(student)
         created.append(reg_no)
