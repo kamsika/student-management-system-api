@@ -9,6 +9,9 @@ class Student(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     parent_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     registration_no = db.Column(db.String(100), nullable=False, index=True)
+    grade = db.Column(db.String(50), nullable=True)
+    section = db.Column(db.String(50), nullable=True)
+    gender = db.Column(db.String(20), nullable=True)
 
     attendance_records = db.relationship("Attendance", backref="student", lazy=True)
     study_logs = db.relationship("StudyLog", backref="student", lazy=True)
@@ -26,6 +29,10 @@ class Student(db.Model):
             "registration_no": self.registration_no,
             "full_name": self.user.full_name if self.user else None,
             "email": self.user.email if self.user else None,
+            "contact": self.user.phone_number if self.user else None,
+            "grade": self.grade,
+            "section": self.section,
+            "gender": self.gender,
             "parent_name": self.parent.full_name if self.parent else None,
             "parent_phone": self.parent.phone_number if self.parent else None,
         }
