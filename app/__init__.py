@@ -83,6 +83,7 @@ def create_app(config_class=Config):
     with app.app_context():
         _ensure_database_exists(app)
         db.create_all()
+        _apply_schema_updates(app)
         _seed_super_admin(app)
         _seed_demo_data(app)
 
@@ -106,6 +107,27 @@ def _scheduled_sweeper(app):
             run_absentee_sweeper()
         except Exception:
             db.session.rollback()
+
+
+def _apply_schema_updates(app):
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(db.engine)
+    if "students" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("students")}
+    additions = {
+        "grade": "VARCHAR(50) NULL",
+        "section": "VARCHAR(50) NULL",
+        "gender": "VARCHAR(20) NULL",
+    }
+
+    for column_name, column_type in additions.items():
+        if column_name not in existing:
+            db.session.execute(text(f"ALTER TABLE students ADD COLUMN {column_name} {column_type}"))
+
+    db.session.commit()
 
 
 def _seed_super_admin(app):
