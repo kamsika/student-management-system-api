@@ -19,9 +19,48 @@ def parse_students_csv(file_content: str) -> List[Dict[str, str]]:
 def generate_students_template_csv() -> str:
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["registration_no", "full_name", "email", "parent_name", "parent_phone", "parent_email"])
-    writer.writerow(["STU-2026-001", "Kavisan Selvam", "kavisan@test.com", "Selvam Arumugam", "+94777123456", "selvam@test.com"])
-    writer.writerow(["STU-2026-002", "Abiraami Balan", "abiraami@test.com", "Balan Rajan", "+94777654321", "balan@test.com"])
+    writer.writerow(
+        [
+            "registration_no",
+            "full_name",
+            "email",
+            "contact",
+            "grade",
+            "section",
+            "gender",
+            "parent_name",
+            "parent_phone",
+            "parent_email",
+        ]
+    )
+    writer.writerow(
+        [
+            "STU-2026-001",
+            "Kavisan Selvam",
+            "kavisan@test.com",
+            "+94771234567",
+            "10",
+            "A",
+            "Male",
+            "Selvam Arumugam",
+            "+94777123456",
+            "selvam@test.com",
+        ]
+    )
+    writer.writerow(
+        [
+            "STU-2026-002",
+            "Abiraami Balan",
+            "abiraami@test.com",
+            "+94772345678",
+            "10",
+            "A",
+            "Female",
+            "Balan Rajan",
+            "+94777654321",
+            "balan@test.com",
+        ]
+    )
     return output.getvalue()
 
 
