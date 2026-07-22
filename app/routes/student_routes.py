@@ -2,6 +2,7 @@ from flask import Blueprint, request, Response
 from flask_jwt_extended import jwt_required
 
 from app.controllers.student_controller import (
+    create_student,
     get_import_template,
     get_parent_children,
     import_students,
@@ -19,6 +20,15 @@ student_bp = Blueprint("students", __name__, url_prefix="/api/students")
 def list_all():
     user = get_current_user()
     result, status = list_students(user)
+    return result, status
+
+
+@student_bp.post("")
+@jwt_required()
+@role_required("institution_admin")
+def create_one():
+    user = get_current_user()
+    result, status = create_student(request.get_json(silent=True) or {}, user)
     return result, status
 
 
