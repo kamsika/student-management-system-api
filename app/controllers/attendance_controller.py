@@ -120,22 +120,33 @@ def scan_center_attendance(data, user):
         return {"errors": ["Only teachers can use the live scanner"]}, 403
 
     registration_no = (data.get("registration_no") or "").strip()
-    if not registration_no:
-        return {"errors": ["registration_no is required"]}, 400
+    student_id = data.get("student_id")
+
+    if not registration_no and not student_id:
+        return {"errors": ["registration_no or student_id is required"]}, 400
 
     classroom, error, status = _resolve_teacher_classroom(user, data.get("classroom_id"))
     if error:
         return error, status
 
-    student = Student.query.filter_by(
-        institution_id=user.institution_id,
-        registration_no=registration_no,
-    ).first()
+    student = None
+    if student_id:
+        student = Student.query.filter_by(
+            id=student_id,
+            institution_id=user.institution_id,
+        ).first()
+    elif registration_no:
+        student = Student.query.filter_by(
+            institution_id=user.institution_id,
+            registration_no=registration_no,
+        ).first()
+
     if not student:
-        return {"errors": [f"Student not found in your center: {registration_no}"]}, 404
+        label = registration_no or f"id={student_id}"
+        return {"errors": [f"Student not found in your center: {label}"]}, 404
 
     payload = {
-        "registration_no": registration_no,
+        "student_id": student.id,
         "classroom_id": classroom.id,
         "status": data.get("status") or "Present",
         "scanned_at": data.get("scanned_at"),
