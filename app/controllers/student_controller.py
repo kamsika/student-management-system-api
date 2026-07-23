@@ -4,6 +4,29 @@ from app.utils.csv_utils import parse_students_csv, generate_students_template_c
 from app.utils.student_id_utils import build_placeholder_emails, generate_next_registration_no
 
 
+def _normalize_name(name: str) -> str:
+    return (name or "").strip().lower()
+
+
+def _normalize_contact(contact: str) -> str:
+    return (contact or "").replace(" ", "").strip()
+
+
+def _find_duplicate_student(institution_id, full_name, contact):
+    students = Student.query.filter_by(institution_id=institution_id).all()
+    target_name = _normalize_name(full_name)
+    target_contact = _normalize_contact(contact)
+
+    for student in students:
+        if not student.user:
+            continue
+        if _normalize_name(student.user.full_name) != target_name:
+            continue
+        if _normalize_contact(student.user.phone_number) == target_contact:
+            return student
+    return None
+
+
 def list_students(user):
     if user.role not in ("institution_admin", "teacher", "super_admin"):
         return {"errors": ["Access denied"]}, 403
@@ -128,6 +151,10 @@ def create_student(data, user, default_password="Student@123"):
 
     if gender and gender not in ("Male", "Female", "Other"):
         return {"errors": ["Gender must be Male, Female, or Other"]}, 400
+
+    duplicate = _find_duplicate_student(user.institution_id, full_name, contact or "")
+    if duplicate:
+        return {"errors": ["Student already exists!"]}, 409
 
     institution = Institution.query.get(user.institution_id)
     subdomain = institution.subdomain if institution else "school"
