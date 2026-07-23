@@ -113,19 +113,26 @@ def _apply_schema_updates(app):
     from sqlalchemy import inspect, text
 
     inspector = inspect(db.engine)
-    if "students" not in inspector.get_table_names():
-        return
+    table_names = inspector.get_table_names()
 
-    existing = {column["name"] for column in inspector.get_columns("students")}
-    additions = {
-        "grade": "VARCHAR(50) NULL",
-        "section": "VARCHAR(50) NULL",
-        "gender": "VARCHAR(20) NULL",
-    }
+    if "users" in table_names:
+        user_columns = {column["name"]: column for column in inspector.get_columns("users")}
+        password_col = user_columns.get("password")
+        # Ensure password hashes are never truncated (breaks login verification).
+        if password_col is not None:
+            db.session.execute(text("ALTER TABLE users MODIFY COLUMN password VARCHAR(512) NOT NULL"))
 
-    for column_name, column_type in additions.items():
-        if column_name not in existing:
-            db.session.execute(text(f"ALTER TABLE students ADD COLUMN {column_name} {column_type}"))
+    if "students" in table_names:
+        existing = {column["name"] for column in inspector.get_columns("students")}
+        additions = {
+            "grade": "VARCHAR(50) NULL",
+            "section": "VARCHAR(50) NULL",
+            "gender": "VARCHAR(20) NULL",
+        }
+
+        for column_name, column_type in additions.items():
+            if column_name not in existing:
+                db.session.execute(text(f"ALTER TABLE students ADD COLUMN {column_name} {column_type}"))
 
     db.session.commit()
 
