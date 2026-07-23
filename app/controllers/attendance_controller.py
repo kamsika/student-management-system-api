@@ -1,9 +1,33 @@
 from datetime import datetime
 
 from app.extensions import db
-from app.models import Attendance, Classroom, Student, User
+from app.models import Attendance, Classroom, Student
 from app.utils import utc_now
 from app.utils.alert_engine import calculate_attendance_status, process_late_alert
+
+
+def _resolve_teacher_classroom(user, classroom_id=None):
+    if not user.institution_id:
+        return None, {"errors": ["Teacher is not linked to a center"]}, 400
+
+    if classroom_id:
+        classroom = Classroom.query.get(classroom_id)
+        if not classroom:
+            return None, {"errors": ["Classroom not found"]}, 404
+        if classroom.institution_id != user.institution_id:
+            return None, {"errors": ["Access denied"]}, 403
+        if classroom.teacher_id != user.id:
+            return None, {"errors": ["Access denied"]}, 403
+        return classroom, None, None
+
+    classroom = (
+        Classroom.query.filter_by(teacher_id=user.id, institution_id=user.institution_id)
+        .order_by(Classroom.name)
+        .first()
+    )
+    if not classroom:
+        return None, {"errors": ["No classroom assigned. Ask your center admin to create one."]}, 400
+    return classroom, None, None
 
 
 def mark_attendance(data, user):
@@ -19,8 +43,9 @@ def mark_attendance(data, user):
     if not classroom:
         return {"errors": ["Classroom not found"]}, 404
 
-    if user.role == "teacher" and classroom.teacher_id != user.id:
-        return {"errors": ["Access denied"]}, 403
+    if user.role == "teacher":
+        if classroom.teacher_id != user.id or classroom.institution_id != user.institution_id:
+            return {"errors": ["Access denied"]}, 403
 
     student = None
     if student_id:
@@ -89,13 +114,72 @@ def mark_attendance(data, user):
         return {"errors": ["Failed to mark attendance"]}, 500
 
 
+def scan_center_attendance(data, user):
+    """Mark attendance by QR/registration for the teacher's own center only."""
+    if user.role != "teacher":
+        return {"errors": ["Only teachers can use the live scanner"]}, 403
+
+    registration_no = (data.get("registration_no") or "").strip()
+    if not registration_no:
+        return {"errors": ["registration_no is required"]}, 400
+
+    classroom, error, status = _resolve_teacher_classroom(user, data.get("classroom_id"))
+    if error:
+        return error, status
+
+    student = Student.query.filter_by(
+        institution_id=user.institution_id,
+        registration_no=registration_no,
+    ).first()
+    if not student:
+        return {"errors": [f"Student not found in your center: {registration_no}"]}, 404
+
+    payload = {
+        "registration_no": registration_no,
+        "classroom_id": classroom.id,
+        "status": data.get("status") or "Present",
+        "scanned_at": data.get("scanned_at"),
+    }
+    return mark_attendance(payload, user)
+
+
+def get_today_center_attendance(user):
+    """List students from the teacher's center who were scanned today."""
+    if user.role != "teacher":
+        return {"errors": ["Access denied"]}, 403
+    if not user.institution_id:
+        return {"errors": ["Teacher is not linked to a center"]}, 400
+
+    today = utc_now().date()
+    records = (
+        Attendance.query.join(Student, Attendance.student_id == Student.id)
+        .join(Classroom, Attendance.classroom_id == Classroom.id)
+        .filter(
+            Student.institution_id == user.institution_id,
+            Classroom.institution_id == user.institution_id,
+            Attendance.date == today,
+            Attendance.status.in_(("Present", "Late")),
+        )
+        .order_by(Attendance.arrival_time.desc(), Attendance.id.desc())
+        .all()
+    )
+
+    return {
+        "date": today.isoformat(),
+        "institution_id": user.institution_id,
+        "count": len(records),
+        "records": [r.to_dict() for r in records],
+    }, 200
+
+
 def get_classroom_attendance(classroom_id, user):
     classroom = Classroom.query.get(classroom_id)
     if not classroom:
         return {"errors": ["Classroom not found"]}, 404
 
-    if user.role == "teacher" and classroom.teacher_id != user.id:
-        return {"errors": ["Access denied"]}, 403
+    if user.role == "teacher":
+        if classroom.teacher_id != user.id or classroom.institution_id != user.institution_id:
+            return {"errors": ["Access denied"]}, 403
     if user.role == "institution_admin" and classroom.institution_id != user.institution_id:
         return {"errors": ["Access denied"]}, 403
 
