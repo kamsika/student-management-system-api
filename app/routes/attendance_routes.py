@@ -22,7 +22,9 @@ attendance_bp = Blueprint("attendance", __name__, url_prefix="/api/attendance")
 @role_required("teacher")
 def mark():
     user = get_current_user()
-    result, status = mark_attendance(request.get_json(silent=True) or {}, user)
+    body = request.get_json(silent=True) or {}
+    print(f"[ATTENDANCE] /mark Received attendance request for ID: {body.get('student_id')!r}")
+    result, status = mark_attendance(body, user)
     return result, status
 
 
@@ -31,7 +33,9 @@ def mark():
 @role_required("teacher")
 def scan():
     user = get_current_user()
-    result, status = scan_center_attendance(request.get_json(silent=True) or {}, user)
+    body = request.get_json(silent=True) or {}
+    print(f"[ATTENDANCE] /scan Received attendance request for ID: {body.get('student_id')!r}")
+    result, status = scan_center_attendance(body, user)
     return result, status
 
 
