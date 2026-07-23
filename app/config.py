@@ -29,7 +29,15 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
     JWT_ACCESS_TOKEN_EXPIRES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRES_MINUTES", "1440")) * 60
-    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+    _cors_origins = [
+        origin.strip()
+        for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+        if origin.strip()
+    ]
+    _frontend_url = os.getenv("FRONTEND_URL", "").strip()
+    if _frontend_url and _frontend_url not in _cors_origins:
+        _cors_origins.append(_frontend_url)
+    CORS_ORIGINS = _cors_origins
     SAAS_FLAT_FEE = float(os.getenv("SAAS_FLAT_FEE", "5000.00"))
     SMS_UNIT_PRICE = float(os.getenv("SMS_UNIT_PRICE", "2.50"))
     SMS_GATEWAY_URL = os.getenv("SMS_GATEWAY_URL", "")
