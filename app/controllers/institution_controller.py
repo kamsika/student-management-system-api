@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from flask import current_app
+from sqlalchemy import func
 
 from app.extensions import db
 from app.models import BillingRecord, Institution, User
@@ -54,14 +55,29 @@ def create_institution(data):
         # Default center admin linked to this institution (role used by the app).
         admin = User(
             institution_id=institution.id,
-            email=generated_email,
+            email=generated_email.lower(),
             role="institution_admin",
             full_name=resolved_admin_name,
             phone_number=admin_phone or None,
             is_active=True,
         )
         admin.set_password(generated_password)
+
+        # Round-trip check before commit so a bad hash never gets saved.
+        if not admin.check_password(generated_password):
+            db.session.rollback()
+            print("[INSTITUTION] Password hash verification failed after set_password")
+            return {"errors": ["Failed to hash admin password"]}, 500
+
+        if not admin.is_active:
+            admin.is_active = True
+
         db.session.add(admin)
+        print(
+            f"[INSTITUTION] Creating admin email={admin.email!r} "
+            f"is_active={admin.is_active} hash_len={len(admin.password or '')} "
+            f"hash_prefix={str(admin.password)[:24]!r}"
+        )
 
         period = datetime.utcnow().strftime("%Y-%m")
         billing = BillingRecord(
@@ -76,9 +92,23 @@ def create_institution(data):
         db.session.add(billing)
         db.session.commit()
 
+        # Re-load from DB and verify the stored hash still matches.
+        saved_admin = User.query.filter(func.lower(User.email) == generated_email.lower()).first()
+        if not saved_admin or not saved_admin.check_password(generated_password):
+            print(
+                f"[INSTITUTION] Post-commit password verify failed "
+                f"found={bool(saved_admin)} email={generated_email!r}"
+            )
+            return {"errors": ["Admin was created but password verification failed"]}, 500
+
+        print(
+            f"[INSTITUTION] Admin ready user_id={saved_admin.id} email={saved_admin.email!r} "
+            f"is_active={saved_admin.is_active}"
+        )
+
         return {
             "institution": institution.to_dict(),
-            "admin": admin.to_dict(),
+            "admin": saved_admin.to_dict(),
             "admin_credentials": {
                 "email": generated_email,
                 "password": generated_password,
@@ -87,8 +117,9 @@ def create_institution(data):
                 "institution_id": institution.id,
             },
         }, 201
-    except Exception:
+    except Exception as exc:
         db.session.rollback()
+        print(f"[INSTITUTION] create_institution failed: {exc}")
         return {"errors": ["Failed to create institution"]}, 500
 
 
