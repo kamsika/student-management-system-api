@@ -58,7 +58,17 @@ def create_app(config_class=Config):
 
     db.init_app(app)
     jwt.init_app(app)
-    CORS(app, origins=app.config["CORS_ORIGINS"], supports_credentials=True)
+    # Explicit origins/methods/headers so browser preflight (OPTIONS) succeeds
+    # from Vercel + localhost. Regex in CORS_ORIGINS covers *.vercel.app previews.
+    CORS(
+        app,
+        origins=app.config["CORS_ORIGINS"],
+        methods=app.config["CORS_METHODS"],
+        allow_headers=app.config["CORS_ALLOW_HEADERS"],
+        expose_headers=app.config["CORS_EXPOSE_HEADERS"],
+        supports_credentials=True,
+        max_age=app.config["CORS_MAX_AGE"],
+    )
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(institution_bp)
