@@ -1,15 +1,26 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.extensions import db
 from app.models import Attendance, Classroom, Student
-from app.utils import utc_now
+from app.utils import get_app_tz, utc_now
 from app.utils.sms_service import dispatch_sms
 
 
-def calculate_attendance_status(classroom, arrival_time):
-    schedule_start = datetime.combine(arrival_time.date(), classroom.schedule_start_time)
-    if arrival_time > schedule_start:
-        delta = arrival_time - schedule_start
+def _as_local(dt_utc_naive: datetime) -> datetime:
+    return dt_utc_naive.replace(tzinfo=timezone.utc).astimezone(get_app_tz())
+
+
+def calculate_attendance_status(classroom, arrival_time_utc):
+    """Compare arrival (naive UTC) against classroom schedule in app local timezone."""
+    arrival_local = _as_local(arrival_time_utc)
+    schedule_start_local = datetime.combine(
+        arrival_local.date(),
+        classroom.schedule_start_time,
+        tzinfo=get_app_tz(),
+    )
+
+    if arrival_local > schedule_start_local:
+        delta = arrival_local - schedule_start_local
         delta_minutes = int(delta.total_seconds() // 60)
         return "Late", delta_minutes
     return "Present", 0
@@ -28,14 +39,14 @@ def process_absent_alert(student, classroom):
 
 
 def run_absentee_sweeper():
-    now = utc_now()
-    today = now.date()
+    now_local = _as_local(utc_now())
+    today = now_local.date()
     classrooms = Classroom.query.all()
 
     for classroom in classrooms:
-        schedule_start = datetime.combine(today, classroom.schedule_start_time)
+        schedule_start = datetime.combine(today, classroom.schedule_start_time, tzinfo=get_app_tz())
         sweep_threshold = schedule_start + timedelta(minutes=30)
-        if now < sweep_threshold:
+        if now_local < sweep_threshold:
             continue
 
         students = Student.query.filter_by(institution_id=classroom.institution_id).all()
