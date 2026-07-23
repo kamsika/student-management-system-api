@@ -6,7 +6,9 @@ from flask_jwt_extended import jwt_required
 from app.controllers.attendance_controller import (
     get_classroom_attendance,
     get_student_attendance,
+    get_today_center_attendance,
     mark_attendance,
+    scan_center_attendance,
 )
 from app.middleware import get_current_user, role_required
 from app.models import Attendance, Classroom
@@ -21,6 +23,24 @@ attendance_bp = Blueprint("attendance", __name__, url_prefix="/api/attendance")
 def mark():
     user = get_current_user()
     result, status = mark_attendance(request.get_json(silent=True) or {}, user)
+    return result, status
+
+
+@attendance_bp.post("/scan")
+@jwt_required()
+@role_required("teacher")
+def scan():
+    user = get_current_user()
+    result, status = scan_center_attendance(request.get_json(silent=True) or {}, user)
+    return result, status
+
+
+@attendance_bp.get("/today")
+@jwt_required()
+@role_required("teacher")
+def today_attendance():
+    user = get_current_user()
+    result, status = get_today_center_attendance(user)
     return result, status
 
 
@@ -50,6 +70,13 @@ def export_pdf(classroom_id):
     classroom = Classroom.query.get(classroom_id)
     if not classroom:
         return {"errors": ["Classroom not found"]}, 404
+
+    if user.role == "teacher" and (
+        classroom.teacher_id != user.id or classroom.institution_id != user.institution_id
+    ):
+        return {"errors": ["Access denied"]}, 403
+    if user.role == "institution_admin" and classroom.institution_id != user.institution_id:
+        return {"errors": ["Access denied"]}, 403
 
     records = Attendance.query.filter_by(classroom_id=classroom_id).order_by(Attendance.date.desc()).limit(100).all()
     pdf_bytes = generate_attendance_pdf(
