@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from flask_jwt_extended import create_access_token
+from sqlalchemy import func
 
 from app.extensions import db
 from app.models import BillingRecord, Institution, User
@@ -9,20 +10,41 @@ from app.utils import utc_now
 
 def login_user(data):
     email = (data.get("email") or "").strip().lower()
-    password = data.get("password") or ""
+    # Keep password characters unchanged (do not lower/strip).
+    password = data.get("password")
+    if password is None:
+        password = ""
+    else:
+        password = str(password)
+
+    print(f"[AUTH] Login attempt email={email!r} password_len={len(password)}")
 
     if not email or not password:
+        print("[AUTH] Login failed: missing email or password")
         return {"errors": ["Email and password are required"]}, 400
 
-    user = User.query.filter_by(email=email).first()
-    if not user or not user.check_password(password):
+    user = User.query.filter(func.lower(User.email) == email).first()
+    if not user:
+        print(f"[AUTH] Login failed: no user found for email={email!r}")
+        return {"errors": ["Invalid email or password"]}, 401
+
+    print(
+        f"[AUTH] User found id={user.id} role={user.role} is_active={user.is_active} "
+        f"institution_id={user.institution_id} hash_prefix={str(user.password)[:20]!r} "
+        f"hash_len={len(user.password or '')}"
+    )
+
+    if not user.check_password(password):
+        print(f"[AUTH] Login failed: password hash comparison failed for user_id={user.id}")
         return {"errors": ["Invalid email or password"]}, 401
 
     if not user.is_active:
+        print(f"[AUTH] Login failed: account deactivated user_id={user.id}")
         return {"errors": ["Account is deactivated"]}, 403
 
     if user.role != "super_admin" and user.institution:
         if user.institution.status == "Suspended":
+            print(f"[AUTH] Login failed: institution suspended institution_id={user.institution_id}")
             return {"errors": ["Institution is suspended"]}, 403
 
     token = create_access_token(
@@ -33,6 +55,7 @@ def login_user(data):
         },
     )
 
+    print(f"[AUTH] Login success user_id={user.id} role={user.role}")
     return {
         "access_token": token,
         "user": user.to_dict(include_institution=True),
