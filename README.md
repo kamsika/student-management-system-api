@@ -230,6 +230,54 @@ After running `python seed.py`:
 | PATCH  | `/:institution_id/status`       | Yes  | `super_admin`                      |
 | GET    | `/:institution_id/billing`      | Yes  | `super_admin`, `institution_admin` |
 
+**Create institution (tuition center):**
+
+Creates the institution row and automatically creates a default **institution admin** user linked to that `institution_id`. A temporary password is generated and returned once so Super Admin can share login details with the center owner.
+
+Request body:
+
+```json
+{
+  "name": "Bright Minds Tuition",
+  "subdomain": "bright-minds",
+  "admin_name": "Center Owner",
+  "admin_email": "owner@brightminds.com",
+  "admin_phone": "+94770000001"
+}
+```
+
+`admin_name`, `admin_email`, and `admin_phone` are optional. If `admin_email` is omitted, the API generates one like `admin.bright-minds@tuition.local`.
+
+Example `201` response:
+
+```json
+{
+  "institution": {
+    "id": 12,
+    "name": "Bright Minds Tuition",
+    "subdomain": "bright-minds",
+    "status": "Active",
+    "created_at": "2026-07-23T12:00:00"
+  },
+  "admin": {
+    "id": 45,
+    "institution_id": 12,
+    "email": "owner@brightminds.com",
+    "role": "institution_admin",
+    "full_name": "Center Owner",
+    "phone_number": "+94770000001",
+    "is_active": true
+  },
+  "admin_credentials": {
+    "email": "owner@brightminds.com",
+    "password": "GeneratedOnce!",
+    "full_name": "Center Owner",
+    "role": "institution_admin",
+    "institution_id": 12
+  }
+}
+```
+
 **Update status:**
 
 ```json
