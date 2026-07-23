@@ -1,8 +1,6 @@
-from datetime import datetime
-
 from app.extensions import db
 from app.models import Attendance, Classroom, Student
-from app.utils import utc_now
+from app.utils import local_today, parse_incoming_timestamp, utc_now
 from app.utils.alert_engine import calculate_attendance_status, process_late_alert
 
 
@@ -107,18 +105,16 @@ def mark_attendance(data, user):
     if not student:
         return {"errors": [f"Student not found for ID: {scanned_id}"]}, 404
 
-    today = utc_now().date()
+    today = local_today()
 
+    # Prefer accurate server UTC time; accept client scanned_at only as a fallback hint.
     scanned_at_raw = data.get("scanned_at")
     if scanned_at_raw:
-        try:
-            arrival_time = datetime.fromisoformat(str(scanned_at_raw).replace("Z", "+00:00"))
-            if arrival_time.tzinfo is not None:
-                arrival_time = arrival_time.replace(tzinfo=None)
-        except (TypeError, ValueError):
-            arrival_time = utc_now()
+        arrival_time = parse_incoming_timestamp(scanned_at_raw)
     else:
         arrival_time = utc_now()
+
+    print(f"[ATTENDANCE] Recording arrival_time(UTC)={arrival_time.isoformat()}Z local_date={today.isoformat()}")
 
     if status_override in ("Present", "Absent", "Late"):
         status = status_override
@@ -210,7 +206,7 @@ def get_today_center_attendance(user):
     if not user.institution_id:
         return {"errors": ["Teacher is not linked to a center"]}, 400
 
-    today = utc_now().date()
+    today = local_today()
     records = (
         Attendance.query.join(Student, Attendance.student_id == Student.id)
         .join(Classroom, Attendance.classroom_id == Classroom.id)
@@ -243,7 +239,7 @@ def get_classroom_attendance(classroom_id, user):
     if user.role == "institution_admin" and classroom.institution_id != user.institution_id:
         return {"errors": ["Access denied"]}, 403
 
-    today = utc_now().date()
+    today = local_today()
     students = Student.query.filter_by(institution_id=classroom.institution_id).all()
     attendance_map = {
         a.student_id: a
