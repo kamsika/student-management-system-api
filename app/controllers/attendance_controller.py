@@ -30,11 +30,64 @@ def _resolve_teacher_classroom(user, classroom_id=None):
     return classroom, None, None
 
 
+def _find_student_in_center(institution_id, scanned_id):
+    """Resolve a scanned QR value to a student in the given center.
+
+    Accepts:
+    - registration codes like "STU-2026-003"
+    - numeric primary keys like "12"
+    """
+    scanned = (str(scanned_id) if scanned_id is not None else "").strip()
+    if not scanned or not institution_id:
+        return None
+
+    # 1) Prefer exact registration_no match (custom IDs from QR codes).
+    student = Student.query.filter_by(
+        institution_id=institution_id,
+        registration_no=scanned,
+    ).first()
+    if student:
+        print(
+            f"[ATTENDANCE] Matched registration_no={scanned!r} -> "
+            f"student.id={student.id} name={student.user.full_name if student.user else None!r}"
+        )
+        return student
+
+    # 2) If the scanned value is a pure integer, try DB primary key.
+    if scanned.isdigit():
+        student = Student.query.filter_by(
+            institution_id=institution_id,
+            id=int(scanned),
+        ).first()
+        if student:
+            print(
+                f"[ATTENDANCE] Matched numeric id={scanned!r} -> "
+                f"student.id={student.id} registration_no={student.registration_no!r} "
+                f"name={student.user.full_name if student.user else None!r}"
+            )
+            return student
+
+    print(f"[ATTENDANCE] No student found in institution_id={institution_id} for scanned_id={scanned!r}")
+    return None
+
+
 def mark_attendance(data, user):
-    student_id = data.get("student_id")
+    raw_student_id = data.get("student_id")
     registration_no = (data.get("registration_no") or "").strip()
     classroom_id = data.get("classroom_id")
     status_override = data.get("status")
+
+    # Support both student_id (exact scanned QR text) and registration_no.
+    scanned_id = ""
+    if raw_student_id is not None and str(raw_student_id).strip():
+        scanned_id = str(raw_student_id).strip()
+    elif registration_no:
+        scanned_id = registration_no
+
+    print(
+        f"[ATTENDANCE] Received attendance request for ID: {scanned_id!r} "
+        f"(raw student_id={raw_student_id!r}, registration_no={registration_no!r})"
+    )
 
     if not classroom_id:
         return {"errors": ["classroom_id is required"]}, 400
@@ -47,22 +100,13 @@ def mark_attendance(data, user):
         if classroom.teacher_id != user.id or classroom.institution_id != user.institution_id:
             return {"errors": ["Access denied"]}, 403
 
-    student = None
-    if student_id:
-        student = Student.query.get(student_id)
-    elif registration_no:
-        student = Student.query.filter_by(
-            institution_id=classroom.institution_id,
-            registration_no=registration_no,
-        ).first()
-
-    if not student_id and not registration_no:
+    if not scanned_id:
         return {"errors": ["student_id or registration_no is required"]}, 400
 
-    if not student or student.institution_id != classroom.institution_id:
-        return {"errors": ["Student not found"]}, 404
+    student = _find_student_in_center(classroom.institution_id, scanned_id)
+    if not student:
+        return {"errors": [f"Student not found for ID: {scanned_id}"]}, 404
 
-    student_id = student.id
     today = utc_now().date()
 
     scanned_at_raw = data.get("scanned_at")
@@ -84,8 +128,8 @@ def mark_attendance(data, user):
 
     try:
         record = Attendance.query.filter_by(
-            student_id=student_id,
-            classroom_id=classroom_id,
+            student_id=student.id,
+            classroom_id=classroom.id,
             date=today,
         ).first()
 
@@ -95,8 +139,8 @@ def mark_attendance(data, user):
             record.marked_by = user.id
         else:
             record = Attendance(
-                student_id=student_id,
-                classroom_id=classroom_id,
+                student_id=student.id,
+                classroom_id=classroom.id,
                 date=today,
                 arrival_time=arrival_time if status != "Absent" else None,
                 status=status,
@@ -108,45 +152,50 @@ def mark_attendance(data, user):
             process_late_alert(student, classroom, delta_minutes)
 
         db.session.commit()
-        return {"attendance": record.to_dict(), "delta_minutes": delta_minutes}, 200
-    except Exception:
+        db.session.refresh(record)
+
+        payload = record.to_dict()
+        print(
+            f"[ATTENDANCE] Marked present student_id={student.id} "
+            f"registration_no={student.registration_no!r} "
+            f"name={payload.get('student_name')!r} status={status}"
+        )
+        return {"attendance": payload, "delta_minutes": delta_minutes}, 200
+    except Exception as exc:
         db.session.rollback()
+        print(f"[ATTENDANCE] mark_attendance failed: {exc}")
         return {"errors": ["Failed to mark attendance"]}, 500
 
 
 def scan_center_attendance(data, user):
-    """Mark attendance by QR/registration for the teacher's own center only."""
+    """Mark attendance by QR value for the teacher's own center only."""
     if user.role != "teacher":
         return {"errors": ["Only teachers can use the live scanner"]}, 403
 
+    raw_student_id = data.get("student_id")
     registration_no = (data.get("registration_no") or "").strip()
-    student_id = data.get("student_id")
+    scanned_id = ""
+    if raw_student_id is not None and str(raw_student_id).strip():
+        scanned_id = str(raw_student_id).strip()
+    elif registration_no:
+        scanned_id = registration_no
 
-    if not registration_no and not student_id:
-        return {"errors": ["registration_no or student_id is required"]}, 400
+    print(f"[ATTENDANCE] Received attendance request for ID: {scanned_id!r}")
+
+    if not scanned_id:
+        return {"errors": ["student_id is required (scanned QR value)"]}, 400
 
     classroom, error, status = _resolve_teacher_classroom(user, data.get("classroom_id"))
     if error:
         return error, status
 
-    student = None
-    if student_id:
-        student = Student.query.filter_by(
-            id=student_id,
-            institution_id=user.institution_id,
-        ).first()
-    elif registration_no:
-        student = Student.query.filter_by(
-            institution_id=user.institution_id,
-            registration_no=registration_no,
-        ).first()
-
+    student = _find_student_in_center(user.institution_id, scanned_id)
     if not student:
-        label = registration_no or f"id={student_id}"
-        return {"errors": [f"Student not found in your center: {label}"]}, 404
+        return {"errors": [f"Student not found in your center: {scanned_id}"]}, 404
 
     payload = {
-        "student_id": student.id,
+        # Keep the original scanned QR text — do not replace with another student's id.
+        "student_id": scanned_id,
         "classroom_id": classroom.id,
         "status": data.get("status") or "Present",
         "scanned_at": data.get("scanned_at"),
