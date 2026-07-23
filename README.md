@@ -246,7 +246,7 @@ Request body:
 }
 ```
 
-`admin_name`, `admin_email`, and `admin_phone` are optional. If `admin_email` is omitted, the API generates one like `admin.bright-minds@tuition.local`.
+`admin_name`, `admin_email`, and `admin_phone` are optional. If `admin_email` is omitted, the API generates one like `admin.bright-minds@studentmgt.app`.
 
 Example `201` response:
 
