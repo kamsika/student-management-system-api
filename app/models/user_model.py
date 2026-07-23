@@ -4,13 +4,17 @@ from app.extensions import db
 from app.utils import to_iso
 
 
+# pbkdf2 hashes stay well under VARCHAR limits and are widely compatible.
+_PASSWORD_HASH_METHOD = "pbkdf2:sha256"
+
+
 class User(db.Model):
     __tablename__ = "users"
 
     id = db.Column(db.Integer, primary_key=True)
     institution_id = db.Column(db.Integer, db.ForeignKey("institutions.id"), nullable=True, index=True)
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
-    password = db.Column(db.String(255), nullable=False)
+    password = db.Column(db.String(512), nullable=False)
     role = db.Column(
         db.Enum(
             "super_admin",
@@ -32,10 +36,21 @@ class User(db.Model):
     parent_students = db.relationship("Student", backref="parent", lazy=True, foreign_keys="Student.parent_id")
 
     def set_password(self, raw_password):
-        self.password = generate_password_hash(raw_password)
+        if raw_password is None:
+            raise ValueError("Password cannot be empty")
+        password_text = str(raw_password)
+        if not password_text:
+            raise ValueError("Password cannot be empty")
+        self.password = generate_password_hash(password_text, method=_PASSWORD_HASH_METHOD)
 
     def check_password(self, raw_password):
-        return check_password_hash(self.password, raw_password)
+        if not self.password or raw_password is None:
+            return False
+        try:
+            return check_password_hash(self.password, str(raw_password))
+        except (ValueError, TypeError) as exc:
+            print(f"[AUTH] check_password_hash error for user_id={self.id}: {exc}")
+            return False
 
     def to_dict(self, include_institution=False):
         data = {
