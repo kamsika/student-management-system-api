@@ -1,37 +1,92 @@
 from datetime import datetime
 
+from flask import current_app
+
 from app.extensions import db
-from app.models import BillingRecord, Institution
+from app.models import BillingRecord, Institution, User
+from app.utils import utc_now
+from app.utils.institution_admin_utils import generate_admin_password, generate_unique_admin_email
 
 
 def create_institution(data):
+    """Create a tuition center and a default institution admin account.
+
+    Super Admin can optionally pass admin_name / admin_email / admin_phone.
+    If email is omitted, one is generated. A temporary password is always
+    generated and returned once in admin_credentials for sharing with the
+    center owner.
+    """
     name = (data.get("name") or "").strip()
     subdomain = (data.get("subdomain") or "").strip().lower()
+    admin_name = (data.get("admin_name") or "").strip()
+    admin_email = (data.get("admin_email") or "").strip().lower()
+    admin_phone = (data.get("admin_phone") or "").strip()
 
     if not name or not subdomain:
         return {"errors": ["Name and subdomain are required"]}, 400
 
+    if not all(c.isalnum() or c == "-" for c in subdomain):
+        return {"errors": ["Subdomain must contain only letters, numbers, and hyphens"]}, 400
+
     if Institution.query.filter_by(subdomain=subdomain).first():
         return {"errors": ["Subdomain already exists"]}, 400
 
+    if admin_email and User.query.filter_by(email=admin_email).first():
+        return {"errors": ["Admin email already registered"]}, 400
+
+    saas_flat_fee = float(current_app.config.get("SAAS_FLAT_FEE", 5000.00))
+    sms_unit_price = float(current_app.config.get("SMS_UNIT_PRICE", 2.50))
+
     try:
-        institution = Institution(name=name, subdomain=subdomain, status="Active")
+        institution = Institution(
+            name=name,
+            subdomain=subdomain,
+            status="Active",
+            created_at=utc_now(),
+        )
         db.session.add(institution)
         db.session.flush()
+
+        generated_email = admin_email or generate_unique_admin_email(subdomain)
+        generated_password = generate_admin_password()
+        resolved_admin_name = admin_name or f"{name} Admin"
+
+        # Default center admin linked to this institution (role used by the app).
+        admin = User(
+            institution_id=institution.id,
+            email=generated_email,
+            role="institution_admin",
+            full_name=resolved_admin_name,
+            phone_number=admin_phone or None,
+            is_active=True,
+        )
+        admin.set_password(generated_password)
+        db.session.add(admin)
 
         period = datetime.utcnow().strftime("%Y-%m")
         billing = BillingRecord(
             institution_id=institution.id,
             billing_period=period,
-            saas_flat_fee=5000.00,
+            saas_flat_fee=saas_flat_fee,
             sms_count=0,
-            sms_unit_price=2.50,
-            total_amount_due=5000.00,
+            sms_unit_price=sms_unit_price,
+            total_amount_due=saas_flat_fee,
             payment_status="Pending",
         )
         db.session.add(billing)
         db.session.commit()
-        return {"institution": institution.to_dict()}, 201
+
+        return {
+            "institution": institution.to_dict(),
+            "admin": admin.to_dict(),
+            "admin_credentials": {
+                "email": generated_email,
+                "password": generated_password,
+                "full_name": resolved_admin_name,
+                "role": "institution_admin",
+                "institution_id": institution.id,
+            },
+        }, 201
     except Exception:
         db.session.rollback()
         return {"errors": ["Failed to create institution"]}, 500
