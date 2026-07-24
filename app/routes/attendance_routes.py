@@ -12,6 +12,7 @@ from app.controllers.attendance_controller import (
 )
 from app.middleware import get_current_user, role_required
 from app.models import Attendance, Classroom
+from app.utils import parse_attendance_date
 from app.utils.pdf_utils import generate_attendance_pdf
 
 attendance_bp = Blueprint("attendance", __name__, url_prefix="/api/attendance")
@@ -41,10 +42,15 @@ def scan():
 
 @attendance_bp.get("/today")
 @jwt_required()
-@role_required("teacher")
+@role_required("teacher", "institution_admin", "super_admin")
 def today_attendance():
+    """List center attendance for a date (default: today). Optional classroom_id filter."""
     user = get_current_user()
-    result, status = get_today_center_attendance(user)
+    result, status = get_today_center_attendance(
+        user,
+        date_str=request.args.get("date"),
+        classroom_id=request.args.get("classroom_id"),
+    )
     return result, status
 
 
@@ -53,7 +59,11 @@ def today_attendance():
 @role_required("teacher", "institution_admin", "super_admin")
 def classroom_attendance(classroom_id):
     user = get_current_user()
-    result, status = get_classroom_attendance(classroom_id, user)
+    result, status = get_classroom_attendance(
+        classroom_id,
+        user,
+        date_str=request.args.get("date"),
+    )
     return result, status
 
 
@@ -82,11 +92,23 @@ def export_pdf(classroom_id):
     if user.role == "institution_admin" and classroom.institution_id != user.institution_id:
         return {"errors": ["Access denied"]}, 403
 
-    records = Attendance.query.filter_by(classroom_id=classroom_id).order_by(Attendance.date.desc()).limit(100).all()
+    date_str = request.args.get("date")
+    query = Attendance.query.filter_by(classroom_id=classroom_id)
+    date_label = "Recent Records"
+    if date_str:
+        attendance_date, date_error = parse_attendance_date(date_str)
+        if date_error:
+            return {"errors": [date_error]}, 400
+        query = query.filter_by(date=attendance_date)
+        date_label = attendance_date.isoformat()
+        records = query.order_by(Attendance.arrival_time.desc(), Attendance.id.desc()).all()
+    else:
+        records = query.order_by(Attendance.date.desc()).limit(100).all()
+
     pdf_bytes = generate_attendance_pdf(
         institution_name=classroom.institution.name if classroom.institution else "Institution",
         classroom_name=classroom.name,
-        date_range="Recent Records",
+        date_range=date_label,
         records=[r.to_dict() for r in records],
     )
     return send_file(
