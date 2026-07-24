@@ -1,6 +1,6 @@
 from app.extensions import db
 from app.models import Attendance, Classroom, Student
-from app.utils import local_today, parse_incoming_timestamp, utc_now
+from app.utils import local_today, parse_attendance_date, parse_incoming_timestamp, utc_now
 from app.utils.alert_engine import calculate_attendance_status, process_late_alert
 
 
@@ -74,6 +74,7 @@ def mark_attendance(data, user):
     registration_no = (data.get("registration_no") or "").strip()
     classroom_id = data.get("classroom_id")
     status_override = data.get("status")
+    prevent_duplicate = bool(data.get("prevent_duplicate"))
 
     # Support both student_id (exact scanned QR text) and registration_no.
     scanned_id = ""
@@ -105,7 +106,12 @@ def mark_attendance(data, user):
     if not student:
         return {"errors": [f"Student not found for ID: {scanned_id}"]}, 404
 
-    today = local_today()
+    attendance_date, date_error = parse_attendance_date(data.get("date"))
+    if date_error:
+        return {"errors": [date_error]}, 400
+    # Scans always use the live calendar day; optional date is for future tooling only.
+    if prevent_duplicate:
+        attendance_date = local_today()
 
     # Prefer accurate server UTC time; accept client scanned_at only as a fallback hint.
     scanned_at_raw = data.get("scanned_at")
@@ -114,7 +120,10 @@ def mark_attendance(data, user):
     else:
         arrival_time = utc_now()
 
-    print(f"[ATTENDANCE] Recording arrival_time(UTC)={arrival_time.isoformat()}Z local_date={today.isoformat()}")
+    print(
+        f"[ATTENDANCE] Recording arrival_time(UTC)={arrival_time.isoformat()}Z "
+        f"local_date={attendance_date.isoformat()}"
+    )
 
     if status_override in ("Present", "Absent", "Late"):
         status = status_override
@@ -126,8 +135,20 @@ def mark_attendance(data, user):
         record = Attendance.query.filter_by(
             student_id=student.id,
             classroom_id=classroom.id,
-            date=today,
+            date=attendance_date,
         ).first()
+
+        if record and prevent_duplicate and record.status in ("Present", "Late"):
+            payload = record.to_dict()
+            print(
+                f"[ATTENDANCE] Duplicate scan blocked student_id={student.id} "
+                f"registration_no={student.registration_no!r} date={attendance_date.isoformat()}"
+            )
+            return {
+                "errors": ["Already scanned for today!"],
+                "already_scanned": True,
+                "attendance": payload,
+            }, 409
 
         if record:
             record.status = status
@@ -137,7 +158,7 @@ def mark_attendance(data, user):
             record = Attendance(
                 student_id=student.id,
                 classroom_id=classroom.id,
-                date=today,
+                date=attendance_date,
                 arrival_time=arrival_time if status != "Absent" else None,
                 status=status,
                 marked_by=user.id,
@@ -195,40 +216,67 @@ def scan_center_attendance(data, user):
         "classroom_id": classroom.id,
         "status": data.get("status") or "Present",
         "scanned_at": data.get("scanned_at"),
+        "prevent_duplicate": True,
     }
     return mark_attendance(payload, user)
 
 
-def get_today_center_attendance(user):
-    """List students from the teacher's center who were scanned today."""
-    if user.role != "teacher":
+def get_center_attendance(user, date_str=None, classroom_id=None):
+    """List Present/Late attendance for a center on a given date (default: today)."""
+    if user.role not in ("teacher", "institution_admin", "super_admin"):
         return {"errors": ["Access denied"]}, 403
-    if not user.institution_id:
-        return {"errors": ["Teacher is not linked to a center"]}, 400
+    if user.role != "super_admin" and not user.institution_id:
+        return {"errors": ["User is not linked to a center"]}, 400
 
-    today = local_today()
-    records = (
+    attendance_date, date_error = parse_attendance_date(date_str)
+    if date_error:
+        return {"errors": [date_error]}, 400
+
+    query = (
         Attendance.query.join(Student, Attendance.student_id == Student.id)
         .join(Classroom, Attendance.classroom_id == Classroom.id)
         .filter(
-            Student.institution_id == user.institution_id,
-            Classroom.institution_id == user.institution_id,
-            Attendance.date == today,
+            Attendance.date == attendance_date,
             Attendance.status.in_(("Present", "Late")),
         )
-        .order_by(Attendance.arrival_time.desc(), Attendance.id.desc())
-        .all()
     )
 
+    if user.role == "super_admin":
+        if classroom_id:
+            query = query.filter(Attendance.classroom_id == int(classroom_id))
+    else:
+        query = query.filter(
+            Student.institution_id == user.institution_id,
+            Classroom.institution_id == user.institution_id,
+        )
+        if classroom_id:
+            classroom = Classroom.query.get(int(classroom_id))
+            if not classroom or classroom.institution_id != user.institution_id:
+                return {"errors": ["Classroom not found"]}, 404
+            if user.role == "teacher" and classroom.teacher_id != user.id:
+                return {"errors": ["Access denied"]}, 403
+            query = query.filter(Attendance.classroom_id == classroom.id)
+        elif user.role == "teacher":
+            # Teachers only see attendance for classrooms they teach.
+            query = query.filter(Classroom.teacher_id == user.id)
+
+    records = query.order_by(Attendance.arrival_time.desc(), Attendance.id.desc()).all()
+
     return {
-        "date": today.isoformat(),
+        "date": attendance_date.isoformat(),
         "institution_id": user.institution_id,
+        "classroom_id": int(classroom_id) if classroom_id else None,
         "count": len(records),
         "records": [r.to_dict() for r in records],
     }, 200
 
 
-def get_classroom_attendance(classroom_id, user):
+def get_today_center_attendance(user, date_str=None, classroom_id=None):
+    """Backward-compatible alias for get_center_attendance."""
+    return get_center_attendance(user, date_str=date_str, classroom_id=classroom_id)
+
+
+def get_classroom_attendance(classroom_id, user, date_str=None):
     classroom = Classroom.query.get(classroom_id)
     if not classroom:
         return {"errors": ["Classroom not found"]}, 404
@@ -239,11 +287,14 @@ def get_classroom_attendance(classroom_id, user):
     if user.role == "institution_admin" and classroom.institution_id != user.institution_id:
         return {"errors": ["Access denied"]}, 403
 
-    today = local_today()
+    attendance_date, date_error = parse_attendance_date(date_str)
+    if date_error:
+        return {"errors": [date_error]}, 400
+
     students = Student.query.filter_by(institution_id=classroom.institution_id).all()
     attendance_map = {
         a.student_id: a
-        for a in Attendance.query.filter_by(classroom_id=classroom_id, date=today).all()
+        for a in Attendance.query.filter_by(classroom_id=classroom_id, date=attendance_date).all()
     }
 
     result = []
@@ -256,7 +307,7 @@ def get_classroom_attendance(classroom_id, user):
 
     return {
         "classroom": classroom.to_dict(),
-        "date": today.isoformat(),
+        "date": attendance_date.isoformat(),
         "records": result,
     }, 200
 
