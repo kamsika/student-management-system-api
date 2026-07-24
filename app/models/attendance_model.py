@@ -23,14 +23,20 @@ class Attendance(db.Model):
     )
 
     def to_dict(self):
+        classroom = self.classroom
+        student = self.student
         return {
             "id": self.id,
             "student_id": self.student_id,
             "classroom_id": self.classroom_id,
+            "class_id": self.classroom_id,
+            "center_id": classroom.institution_id if classroom else None,
+            "institution_id": classroom.institution_id if classroom else None,
+            "classroom_name": classroom.name if classroom else None,
             "date": to_iso(self.date),
             "arrival_time": to_iso(self.arrival_time),
             "status": self.status,
             "marked_by": self.marked_by,
-            "student_name": self.student.user.full_name if self.student and self.student.user else None,
-            "registration_no": self.student.registration_no if self.student else None,
+            "student_name": student.user.full_name if student and student.user else None,
+            "registration_no": student.registration_no if student else None,
         }
