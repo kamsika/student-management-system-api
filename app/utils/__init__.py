@@ -32,6 +32,19 @@ def local_today() -> date:
     return datetime.now(get_app_tz()).date()
 
 
+def parse_attendance_date(raw_value):
+    """Parse YYYY-MM-DD into a date, or return local_today() when empty.
+
+    Returns (date, None) on success, or (None, error_message) on failure.
+    """
+    if raw_value is None or str(raw_value).strip() == "":
+        return local_today(), None
+    try:
+        return date.fromisoformat(str(raw_value).strip()), None
+    except ValueError:
+        return None, "date must be YYYY-MM-DD"
+
+
 def to_iso(value):
     """Serialize datetimes as ISO-8601 with explicit UTC Z suffix when naive."""
     if value is None:
