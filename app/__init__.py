@@ -10,9 +10,11 @@ from app.routes import (
     auth_bp,
     classroom_bp,
     institution_bp,
+    parent_bp,
     sms_log_bp,
     study_log_bp,
     student_bp,
+    teacher_bp,
 )
 from app.utils.alert_engine import run_absentee_sweeper
 
@@ -77,6 +79,8 @@ def create_app(config_class=Config):
     app.register_blueprint(study_log_bp)
     app.register_blueprint(sms_log_bp)
     app.register_blueprint(student_bp)
+    app.register_blueprint(parent_bp)
+    app.register_blueprint(teacher_bp)
 
     @app.errorhandler(404)
     def not_found(_error):
@@ -138,6 +142,7 @@ def _apply_schema_updates(app):
             "grade": "VARCHAR(50) NULL",
             "section": "VARCHAR(50) NULL",
             "gender": "VARCHAR(20) NULL",
+            "face_descriptor": "JSON NULL",
         }
 
         for column_name, column_type in additions.items():
