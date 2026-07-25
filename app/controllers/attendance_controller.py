@@ -281,11 +281,11 @@ def mark_attendance(data, user):
 
 
 def create_attendance(data, user):
-    """Compatibility API for kiosk clients posting camelCase attendance data."""
+    """Create a kiosk attendance record, always with Present status."""
     student_id = data.get("studentId")
     classroom_id = data.get("classroomId")
-    status = data.get("status") or "Present"
     timestamp = data.get("timestamp")
+    status = "Present"
 
     if student_id is None or str(student_id).strip() == "":
         return {"success": False, "errors": ["studentId is required"]}, 400
@@ -293,12 +293,6 @@ def create_attendance(data, user):
         student_id = int(student_id)
     except (TypeError, ValueError):
         return {"success": False, "errors": ["studentId must be an integer"]}, 400
-
-    if status not in ("Present", "Absent", "Late"):
-        return {
-            "success": False,
-            "errors": ["status must be Present, Absent, or Late"],
-        }, 400
 
     student = Student.query.get(student_id)
     if not student:
@@ -313,10 +307,28 @@ def create_attendance(data, user):
         .first()
     )
     if existing:
+        # This endpoint represents a positive kiosk check-in. Correct any prior
+        # Absent/Late value instead of returning it unchanged.
+        try:
+            if existing.status != status:
+                existing.status = status
+                existing.arrival_time = existing.arrival_time or parse_incoming_timestamp(timestamp)
+                existing.marked_by = user.id
+                db.session.commit()
+                db.session.refresh(existing)
+            payload = existing.to_dict()
+        except Exception as exc:
+            db.session.rollback()
+            print(f"[ATTENDANCE] Failed to correct existing attendance: {exc}")
+            return {"success": False, "errors": ["Failed to update attendance"]}, 500
+
         return {
             "success": True,
+            "status": status,
             "message": "Already marked today",
-            "attendance": existing.to_dict(),
+            "data": payload,
+            # Backward compatibility for the kiosk client.
+            "attendance": payload,
         }, 200
 
     if classroom_id is not None and str(classroom_id).strip() != "":
@@ -347,7 +359,7 @@ def create_attendance(data, user):
         {
             "student_id": student.id,
             "classroom_id": classroom.id,
-            "status": status,
+            "status": "Present",
             "scanned_at": timestamp,
             "date": attendance_date.isoformat(),
             "prevent_duplicate": True,
@@ -356,18 +368,24 @@ def create_attendance(data, user):
     )
 
     if result_status == 409 and result.get("already_scanned"):
+        payload = result.get("attendance")
         return {
             "success": True,
+            "status": status,
             "message": "Already marked today",
-            "attendance": result.get("attendance"),
+            "data": payload,
+            "attendance": payload,
         }, 200
     if result_status >= 400:
         return {"success": False, **result}, result_status
 
+    payload = result["attendance"]
     return {
         "success": True,
+        "status": status,
         "message": "Attendance marked successfully",
-        "attendance": result["attendance"],
+        "data": payload,
+        "attendance": payload,
     }, 201
 
 
