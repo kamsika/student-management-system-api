@@ -215,3 +215,76 @@ def create_student(data, user, default_password="Student@123"):
     except Exception:
         db.session.rollback()
         return {"errors": ["Failed to create student"]}, 500
+
+
+def _authorize_student_access(student, user):
+    if not student:
+        return {"errors": ["Student not found"]}, 404
+    if user.role == "super_admin":
+        return None
+    if user.role in ("institution_admin", "teacher"):
+        if student.institution_id != user.institution_id:
+            return {"errors": ["Access denied"]}, 403
+        return None
+    return {"errors": ["Access denied"]}, 403
+
+
+def list_face_profiles(user):
+    """Return students with optional descriptors for recognition matching."""
+    if user.role not in ("institution_admin", "teacher", "super_admin"):
+        return {"errors": ["Access denied"]}, 403
+
+    query = Student.query
+    if user.role != "super_admin":
+        query = query.filter_by(institution_id=user.institution_id)
+
+    students = query.order_by(Student.id.asc()).all()
+    profiles = []
+    for student in students:
+        payload = student.to_dict(include_face_descriptor=True)
+        profiles.append(
+            {
+                "id": payload["id"],
+                "registration_no": payload["registration_no"],
+                "full_name": payload["full_name"],
+                "descriptor": payload.get("descriptor"),
+                "has_face_descriptor": payload["has_face_descriptor"],
+            }
+        )
+    return {"profiles": profiles}, 200
+
+
+def save_student_face(student_id, data, user):
+    """Persist a 128-element face-api.js descriptor for a student."""
+    if user.role not in ("institution_admin", "teacher", "super_admin"):
+        return {"errors": ["Access denied"]}, 403
+
+    student = Student.query.get(student_id)
+    denied = _authorize_student_access(student, user)
+    if denied:
+        return denied
+
+    descriptor = data.get("descriptor")
+    if not isinstance(descriptor, list):
+        return {"errors": ["descriptor must be an array of numbers"]}, 400
+    if len(descriptor) != 128:
+        return {"errors": ["descriptor must contain exactly 128 numbers"]}, 400
+
+    try:
+        floats = [float(value) for value in descriptor]
+    except (TypeError, ValueError):
+        return {"errors": ["descriptor values must be numbers"]}, 400
+
+    try:
+        student.face_descriptor = floats
+        db.session.commit()
+        db.session.refresh(student)
+        return {
+            "success": True,
+            "student": student.to_dict(),
+            "message": "Face descriptor saved successfully",
+        }, 200
+    except Exception as exc:
+        db.session.rollback()
+        print(f"[FACE] Failed to save descriptor for student_id={student_id}: {exc}")
+        return {"errors": ["Failed to save face descriptor"]}, 500
