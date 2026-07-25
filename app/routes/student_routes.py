@@ -6,8 +6,10 @@ from app.controllers.student_controller import (
     get_import_template,
     get_parent_children,
     import_students,
+    list_face_profiles,
     list_students,
     list_teachers,
+    save_student_face,
 )
 from app.middleware import get_current_user, role_required
 
@@ -63,6 +65,15 @@ def teachers():
     return result, status
 
 
+@student_bp.get("/face-profiles")
+@jwt_required()
+@role_required("institution_admin", "teacher", "super_admin")
+def face_profiles():
+    user = get_current_user()
+    result, status = list_face_profiles(user)
+    return result, status
+
+
 @student_bp.get("/import/template")
 @jwt_required()
 @role_required("institution_admin")
@@ -73,3 +84,22 @@ def template():
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=students_import_template.csv"},
     )
+
+
+@student_bp.post("/<int:student_id>/face")
+@jwt_required()
+@role_required("institution_admin", "teacher", "super_admin")
+def save_face(student_id):
+    user = get_current_user()
+    result, status = save_student_face(student_id, request.get_json(silent=True) or {}, user)
+    return result, status
+
+
+@student_bp.put("/<int:student_id>/face")
+@jwt_required()
+@role_required("institution_admin", "teacher", "super_admin")
+def update_face(student_id):
+    """Alias kept for older clients that used PUT."""
+    user = get_current_user()
+    result, status = save_student_face(student_id, request.get_json(silent=True) or {}, user)
+    return result, status
