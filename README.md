@@ -320,9 +320,18 @@ Valid values: `Active`, `Suspended`
 | Method | Endpoint                              | Auth | Roles                                                        |
 | ------ | ------------------------------------- | ---- | ------------------------------------------------------------ |
 | POST   | `/mark`                               | Yes  | `teacher`                                                    |
+| POST   | `/scan`                               | Yes  | `teacher`                                                    |
+| GET    | `/today`                              | Yes  | `teacher`, `institution_admin`, `super_admin`                |
 | GET    | `/classroom/:classroom_id`            | Yes  | `teacher`, `institution_admin`, `super_admin`                |
 | GET    | `/student/:student_id`                | Yes  | `student`, `parent`, `teacher`, `institution_admin`, `super_admin` |
+| GET    | `/report`                             | Yes  | `teacher`, `institution_admin`, `super_admin`                |
+| GET    | `/report/export/csv`                  | Yes  | `teacher`, `institution_admin`                               |
+| GET    | `/report/export/pdf`                  | Yes  | `teacher`, `institution_admin`                               |
 | GET    | `/classroom/:classroom_id/export/pdf` | Yes  | `teacher`, `institution_admin`                               |
+
+**Student history query params:** optional `classroom_id`, `start_date`, `end_date`. Response includes `summary` with total classes, present, absent, and percentage.
+
+**Report / export query params:** required `classroom_id`, `start_date`, `end_date` (YYYY-MM-DD). Summary columns: Student Name, ID, Total Present, Total Absent, Percentage.
 
 **Mark attendance:**
 
