@@ -78,3 +78,19 @@ def export_attendance_csv(records: List[Dict]) -> str:
             record.get("status", ""),
         ])
     return output.getvalue()
+
+
+def export_attendance_summary_csv(rows: List[Dict]) -> str:
+    """CSV/Excel-friendly summary: Name, ID, Present, Absent, Percentage."""
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Student Name", "ID", "Total Present", "Total Absent", "Percentage"])
+    for row in rows:
+        writer.writerow([
+            row.get("student_name", "") or "",
+            row.get("registration_no", "") or row.get("student_id", ""),
+            row.get("total_present", 0),
+            row.get("total_absent", 0),
+            row.get("percentage", 0),
+        ])
+    return output.getvalue()
