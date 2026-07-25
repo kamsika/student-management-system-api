@@ -1,5 +1,5 @@
 from app.extensions import db
-from app.models import Attendance, Classroom, Student
+from app.models import Attendance, Classroom, Student, User
 from app.utils import local_today, parse_attendance_date, parse_incoming_timestamp, utc_now
 from app.utils.alert_engine import calculate_attendance_status, process_late_alert
 
@@ -291,24 +291,65 @@ def get_classroom_attendance(classroom_id, user, date_str=None):
     if date_error:
         return {"errors": [date_error]}, 400
 
-    students = Student.query.filter_by(institution_id=classroom.institution_id).all()
+    # Active student roster for the center (no per-classroom enrollment table yet).
+    students = (
+        Student.query.join(User, Student.user_id == User.id)
+        .filter(
+            Student.institution_id == classroom.institution_id,
+            User.is_active.is_(True),
+        )
+        .order_by(User.full_name.asc(), Student.registration_no.asc())
+        .all()
+    )
     attendance_map = {
         a.student_id: a
         for a in Attendance.query.filter_by(classroom_id=classroom_id, date=attendance_date).all()
     }
 
-    result = []
+    records = []
+    present_records = []
+    absent_records = []
+
     for student in students:
         record = attendance_map.get(student.id)
-        result.append({
-            "student": student.to_dict(),
-            "attendance": record.to_dict() if record else None,
-        })
+        student_payload = student.to_dict()
+        attendance_payload = record.to_dict() if record else None
+        row = {
+            "student": student_payload,
+            "attendance": attendance_payload,
+        }
+        records.append(row)
+
+        status = attendance_payload.get("status") if attendance_payload else None
+        if status in ("Present", "Late"):
+            present_records.append(row)
+        else:
+            # No row for the date, or explicit Absent → counted as absent.
+            absent_records.append({
+                "student": student_payload,
+                "attendance": attendance_payload,
+                "effective_status": "Absent",
+            })
+
+    total_enrolled = len(students)
+    total_present = len(present_records)
+    total_absent = len(absent_records)
+    attendance_rate = (
+        round((total_present / total_enrolled) * 100, 1) if total_enrolled else 0.0
+    )
 
     return {
         "classroom": classroom.to_dict(),
         "date": attendance_date.isoformat(),
-        "records": result,
+        "records": records,
+        "present": present_records,
+        "absent": absent_records,
+        "summary": {
+            "total_enrolled": total_enrolled,
+            "total_present": total_present,
+            "total_absent": total_absent,
+            "attendance_rate": attendance_rate,
+        },
     }, 200
 
 
