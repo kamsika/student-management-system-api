@@ -4,6 +4,7 @@ import io
 from flask_jwt_extended import jwt_required
 
 from app.controllers.attendance_controller import (
+    create_attendance,
     get_attendance_report,
     get_classroom_attendance,
     get_student_attendance,
@@ -20,9 +21,21 @@ from app.utils.pdf_utils import generate_attendance_pdf, generate_attendance_sum
 attendance_bp = Blueprint("attendance", __name__, url_prefix="/api/attendance")
 
 
+@attendance_bp.post("")
+@attendance_bp.post("/")
+@jwt_required()
+@role_required("teacher", "institution_admin")
+def create():
+    """Create today's attendance from {studentId, timestamp?, status?, classroomId?}."""
+    user = get_current_user()
+    body = request.get_json(silent=True) or {}
+    result, status = create_attendance(body, user)
+    return result, status
+
+
 @attendance_bp.post("/mark")
 @jwt_required()
-@role_required("teacher")
+@role_required("teacher", "institution_admin")
 def mark():
     user = get_current_user()
     body = request.get_json(silent=True) or {}
