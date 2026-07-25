@@ -189,6 +189,11 @@ def mark_attendance(data, user):
     if user.role == "teacher":
         if classroom.teacher_id != user.id or classroom.institution_id != user.institution_id:
             return {"errors": ["Access denied"]}, 403
+    elif user.role == "institution_admin":
+        if classroom.institution_id != user.institution_id:
+            return {"errors": ["Access denied"]}, 403
+    else:
+        return {"errors": ["Access denied"]}, 403
 
     if not scanned_id:
         return {"errors": ["student_id or registration_no is required"]}, 400
@@ -273,6 +278,97 @@ def mark_attendance(data, user):
         db.session.rollback()
         print(f"[ATTENDANCE] mark_attendance failed: {exc}")
         return {"errors": ["Failed to mark attendance"]}, 500
+
+
+def create_attendance(data, user):
+    """Compatibility API for kiosk clients posting camelCase attendance data."""
+    student_id = data.get("studentId")
+    classroom_id = data.get("classroomId")
+    status = data.get("status") or "Present"
+    timestamp = data.get("timestamp")
+
+    if student_id is None or str(student_id).strip() == "":
+        return {"success": False, "errors": ["studentId is required"]}, 400
+    try:
+        student_id = int(student_id)
+    except (TypeError, ValueError):
+        return {"success": False, "errors": ["studentId must be an integer"]}, 400
+
+    if status not in ("Present", "Absent", "Late"):
+        return {
+            "success": False,
+            "errors": ["status must be Present, Absent, or Late"],
+        }, 400
+
+    student = Student.query.get(student_id)
+    if not student:
+        return {"success": False, "errors": ["Student not found"]}, 404
+    if student.institution_id != user.institution_id:
+        return {"success": False, "errors": ["Access denied"]}, 403
+
+    attendance_date = local_today()
+    existing = (
+        Attendance.query.filter_by(student_id=student.id, date=attendance_date)
+        .order_by(Attendance.id.asc())
+        .first()
+    )
+    if existing:
+        return {
+            "success": True,
+            "message": "Already marked today",
+            "attendance": existing.to_dict(),
+        }, 200
+
+    if classroom_id is not None and str(classroom_id).strip() != "":
+        try:
+            classroom_id = int(classroom_id)
+        except (TypeError, ValueError):
+            return {"success": False, "errors": ["classroomId must be an integer"]}, 400
+        classroom, error, error_status = _authorize_classroom(
+            classroom_id, user, allow_super_admin=False
+        )
+        if error:
+            return {"success": False, **error}, error_status
+    else:
+        classroom_query = Classroom.query.filter_by(institution_id=user.institution_id)
+        if user.role == "teacher":
+            classroom_query = classroom_query.filter_by(teacher_id=user.id)
+        classrooms = classroom_query.order_by(Classroom.id.asc()).limit(2).all()
+        if not classrooms:
+            return {"success": False, "errors": ["No classroom is available"]}, 400
+        if len(classrooms) > 1:
+            return {
+                "success": False,
+                "errors": ["classroomId is required when more than one classroom is available"],
+            }, 400
+        classroom = classrooms[0]
+
+    result, result_status = mark_attendance(
+        {
+            "student_id": student.id,
+            "classroom_id": classroom.id,
+            "status": status,
+            "scanned_at": timestamp,
+            "date": attendance_date.isoformat(),
+            "prevent_duplicate": True,
+        },
+        user,
+    )
+
+    if result_status == 409 and result.get("already_scanned"):
+        return {
+            "success": True,
+            "message": "Already marked today",
+            "attendance": result.get("attendance"),
+        }, 200
+    if result_status >= 400:
+        return {"success": False, **result}, result_status
+
+    return {
+        "success": True,
+        "message": "Attendance marked successfully",
+        "attendance": result["attendance"],
+    }, 201
 
 
 def scan_center_attendance(data, user):
