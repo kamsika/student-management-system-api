@@ -12,6 +12,8 @@ class Student(db.Model):
     grade = db.Column(db.String(50), nullable=True)
     section = db.Column(db.String(50), nullable=True)
     gender = db.Column(db.String(20), nullable=True)
+    # 128-element face-api.js descriptor used for recognition attendance.
+    face_descriptor = db.Column(db.JSON, nullable=True)
 
     attendance_records = db.relationship("Attendance", backref="student", lazy=True)
     study_logs = db.relationship("StudyLog", backref="student", lazy=True)
@@ -20,8 +22,8 @@ class Student(db.Model):
         db.UniqueConstraint("institution_id", "registration_no", name="uq_institution_registration"),
     )
 
-    def to_dict(self):
-        return {
+    def to_dict(self, include_face_descriptor=False):
+        data = {
             "id": self.id,
             "institution_id": self.institution_id,
             "user_id": self.user_id,
@@ -35,4 +37,8 @@ class Student(db.Model):
             "gender": self.gender,
             "parent_name": self.parent.full_name if self.parent else None,
             "parent_phone": self.parent.phone_number if self.parent else None,
+            "has_face_descriptor": bool(self.face_descriptor),
         }
+        if include_face_descriptor:
+            data["descriptor"] = self.face_descriptor
+        return data
