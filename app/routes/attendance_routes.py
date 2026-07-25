@@ -4,6 +4,7 @@ import io
 from flask_jwt_extended import jwt_required
 
 from app.controllers.attendance_controller import (
+    get_attendance_report,
     get_classroom_attendance,
     get_student_attendance,
     get_today_center_attendance,
@@ -13,7 +14,8 @@ from app.controllers.attendance_controller import (
 from app.middleware import get_current_user, role_required
 from app.models import Attendance, Classroom
 from app.utils import parse_attendance_date
-from app.utils.pdf_utils import generate_attendance_pdf
+from app.utils.csv_utils import export_attendance_summary_csv
+from app.utils.pdf_utils import generate_attendance_pdf, generate_attendance_summary_pdf
 
 attendance_bp = Blueprint("attendance", __name__, url_prefix="/api/attendance")
 
@@ -72,8 +74,92 @@ def classroom_attendance(classroom_id):
 @role_required("student", "parent", "teacher", "institution_admin", "super_admin")
 def student_attendance(student_id):
     user = get_current_user()
-    result, status = get_student_attendance(student_id, user)
+    result, status = get_student_attendance(
+        student_id,
+        user,
+        classroom_id=request.args.get("classroom_id"),
+        start_date_str=request.args.get("start_date"),
+        end_date_str=request.args.get("end_date"),
+    )
     return result, status
+
+
+@attendance_bp.get("/report")
+@jwt_required()
+@role_required("teacher", "institution_admin", "super_admin")
+def attendance_report():
+    """Filtered per-student attendance summary for a classroom and date range."""
+    user = get_current_user()
+    result, status = get_attendance_report(
+        user,
+        classroom_id=request.args.get("classroom_id"),
+        start_date_str=request.args.get("start_date"),
+        end_date_str=request.args.get("end_date"),
+    )
+    return result, status
+
+
+@attendance_bp.get("/report/export/csv")
+@jwt_required()
+@role_required("teacher", "institution_admin")
+def export_report_csv():
+    user = get_current_user()
+    result, status = get_attendance_report(
+        user,
+        classroom_id=request.args.get("classroom_id"),
+        start_date_str=request.args.get("start_date"),
+        end_date_str=request.args.get("end_date"),
+    )
+    if status != 200:
+        return result, status
+
+    csv_text = export_attendance_summary_csv(result.get("students") or [])
+    classroom_id = result["classroom"]["id"]
+    start = result["start_date"]
+    end = result["end_date"]
+    return send_file(
+        io.BytesIO(csv_text.encode("utf-8-sig")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f"attendance_summary_{classroom_id}_{start}_{end}.csv",
+    )
+
+
+@attendance_bp.get("/report/export/pdf")
+@jwt_required()
+@role_required("teacher", "institution_admin")
+def export_report_pdf():
+    user = get_current_user()
+    result, status = get_attendance_report(
+        user,
+        classroom_id=request.args.get("classroom_id"),
+        start_date_str=request.args.get("start_date"),
+        end_date_str=request.args.get("end_date"),
+    )
+    if status != 200:
+        return result, status
+
+    classroom = result["classroom"]
+    institution_name = "Institution"
+    classroom_model = Classroom.query.get(classroom["id"])
+    if classroom_model and classroom_model.institution:
+        institution_name = classroom_model.institution.name
+
+    pdf_bytes = generate_attendance_summary_pdf(
+        institution_name=institution_name,
+        classroom_name=classroom.get("name") or f"Classroom {classroom['id']}",
+        date_range=f"{result['start_date']} to {result['end_date']}",
+        total_classes_held=result.get("total_classes_held", 0),
+        rows=result.get("students") or [],
+    )
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=(
+            f"attendance_summary_{classroom['id']}_{result['start_date']}_{result['end_date']}.pdf"
+        ),
+    )
 
 
 @attendance_bp.get("/classroom/<int:classroom_id>/export/pdf")
