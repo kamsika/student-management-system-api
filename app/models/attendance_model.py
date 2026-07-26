@@ -25,6 +25,17 @@ class Attendance(db.Model):
     marker = db.relationship("User", foreign_keys=[marked_by])
     subject = db.relationship("Subject", foreign_keys=[subject_id], lazy=True)
 
+    @staticmethod
+    def attendance_method_label(marked_via: str | None) -> str | None:
+        value = (marked_via or "").strip().lower()
+        if value == "qr":
+            return "QR"
+        if value == "manual":
+            return "Manual"
+        if value == "face":
+            return "Face"
+        return None
+
     __table_args__ = (
         db.UniqueConstraint(
             "student_id",
@@ -57,6 +68,8 @@ class Attendance(db.Model):
             "subjectName": subject_name or None,
             "marked_via": self.marked_via or None,
             "markedVia": self.marked_via or None,
+            "attendance_method": self.attendance_method_label(self.marked_via),
+            "attendanceMethod": self.attendance_method_label(self.marked_via),
             "marked_by": self.marked_by,
             "checker_id": self.marked_by,
             "checkerId": self.marked_by,

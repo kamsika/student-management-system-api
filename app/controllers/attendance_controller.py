@@ -814,6 +814,12 @@ def save_manual_attendance(data, user):
     date_raw = data.get("date")
     marking_time_raw = data.get("markingTime") or data.get("marking_time") or data.get("arrivalTime")
     entries = data.get("students") or data.get("entries") or []
+    force_overwrite = bool(
+        data.get("forceOverwrite")
+        or data.get("force_overwrite")
+        or data.get("overwriteQr")
+        or data.get("overwrite_qr")
+    )
 
     if classroom_id is None or str(classroom_id).strip() == "":
         return {"success": False, "errors": ["classroomId is required"]}, 400
@@ -868,6 +874,7 @@ def save_manual_attendance(data, user):
 
     saved = []
     errors = []
+    qr_conflicts = []
 
     try:
         for index, entry in enumerate(entries):
@@ -887,6 +894,9 @@ def save_manual_attendance(data, user):
                 student_id = int(raw_student_id)
             except (TypeError, ValueError):
                 errors.append(f"students[{index}].studentId must be an integer")
+                continue
+
+            if status in ("", "Not Marked", "NotMarked", "Not marked"):
                 continue
 
             if status not in ("Present", "Absent", "Late"):
@@ -910,6 +920,26 @@ def save_manual_attendance(data, user):
                 subject_name=subject_name,
             ).first()
 
+            if (
+                record
+                and (record.marked_via or "").strip().lower() == "qr"
+                and not force_overwrite
+            ):
+                qr_conflicts.append(
+                    {
+                        "studentId": student.id,
+                        "student_id": student.id,
+                        "fullName": student.user.full_name if student.user else None,
+                        "registrationNo": student.registration_no,
+                        "markedVia": "qr",
+                        "marked_via": "qr",
+                        "attendanceMethod": "QR",
+                        "attendance_method": "QR",
+                        "status": record.status,
+                    }
+                )
+                continue
+
             mark_time = arrival_time if status != "Absent" else None
 
             if record:
@@ -932,7 +962,17 @@ def save_manual_attendance(data, user):
 
             saved.append(record)
 
-        if errors and not saved:
+        if qr_conflicts and not saved:
+            db.session.rollback()
+            return {
+                "success": False,
+                "code": "qr_conflict",
+                "message": "Attendance already marked using QR for one or more students.",
+                "qrConflicts": qr_conflicts,
+                "qr_conflicts": qr_conflicts,
+            }, 409
+
+        if errors and not saved and not qr_conflicts:
             db.session.rollback()
             return {"success": False, "errors": errors}, 400
 
@@ -948,9 +988,13 @@ def save_manual_attendance(data, user):
             "date": attendance_date.isoformat(),
             "markingTime": marking_time_raw,
             "markedVia": "manual",
+            "attendanceMethod": "Manual",
+            "attendance_method": "Manual",
             "count": len(saved),
             "records": [record.to_dict() for record in saved],
             "errors": errors or None,
+            "qrConflicts": qr_conflicts or None,
+            "qr_conflicts": qr_conflicts or None,
         }, 200
     except Exception as exc:
         db.session.rollback()
@@ -958,7 +1002,7 @@ def save_manual_attendance(data, user):
         return {"success": False, "errors": ["Failed to save manual attendance"]}, 500
 
 
-def get_manual_attendance_roster(user, classroom_id=None, subject_name=None, date_str=None):
+def get_manual_attendance_roster(user, classroom_id=None, subject_name=None, date_str=None, grade=None):
     """Roster + current status for manual marking (filtered by subject when provided)."""
     if classroom_id is None or str(classroom_id).strip() == "":
         return {"errors": ["classroomId is required"]}, 400
@@ -968,6 +1012,7 @@ def get_manual_attendance_roster(user, classroom_id=None, subject_name=None, dat
         return {"errors": ["classroomId must be an integer"]}, 400
 
     subject_name = (subject_name or "").strip()
+    grade_filter = (grade or "").strip().lower()
     classroom, error, status_code = _authorize_classroom(
         classroom_id, user, allow_super_admin=False
     )
@@ -1021,12 +1066,20 @@ def get_manual_attendance_roster(user, classroom_id=None, subject_name=None, dat
 
     roster = []
     for student in students:
+        if grade_filter and grade_filter not in ("all", ""):
+            student_grade = (student.grade or "").strip().lower()
+            classroom_grade = (classroom.grade or "").strip().lower()
+            target = grade_filter
+            if student_grade != target and classroom_grade != target:
+                if target not in student_grade and target not in classroom_grade:
+                    continue
         record = attendance_map.get(student.id)
         roster.append(
             {
                 "studentId": student.id,
                 "fullName": student.user.full_name if student.user else None,
                 "registrationNo": student.registration_no,
+                "grade": student.grade,
                 "status": record.status if record else None,
                 "statusIndicator": {
                     "Present": "🟢",

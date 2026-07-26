@@ -406,6 +406,8 @@ def get_teacher_attendance_overview(
                 "classroomName": classroom.name if classroom else None,
                 "markedVia": record.marked_via or None,
                 "marked_via": record.marked_via or None,
+                "attendanceMethod": Attendance.attendance_method_label(record.marked_via),
+                "attendance_method": Attendance.attendance_method_label(record.marked_via),
                 "markedBy": record.marked_by,
                 "marked_by": record.marked_by,
             }

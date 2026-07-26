@@ -68,6 +68,7 @@ def manual_roster():
         classroom_id=request.args.get("classroomId") or request.args.get("classroom_id"),
         subject_name=request.args.get("subjectName") or request.args.get("subject_name"),
         date_str=request.args.get("date"),
+        grade=request.args.get("grade"),
     )
     return result, status
 
