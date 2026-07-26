@@ -49,6 +49,7 @@ class StudentPayment(db.Model):
         server_default="Pending",
     )
     payment_date = db.Column(db.Date, nullable=True)
+    collected_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
     created_at = db.Column(db.DateTime, nullable=False, default=utc_now)
     updated_at = db.Column(db.DateTime, nullable=False, default=utc_now, onupdate=utc_now)
 
@@ -58,6 +59,7 @@ class StudentPayment(db.Model):
     paid_at = db.Column(db.DateTime, nullable=True)
 
     student = db.relationship("Student", backref="monthly_payments", lazy=True)
+    collector = db.relationship("User", foreign_keys=[collected_by], lazy=True)
 
     __table_args__ = (
         db.UniqueConstraint(
@@ -127,6 +129,8 @@ class StudentPayment(db.Model):
             "paymentStatus": self.payment_status,
             "payment_date": payment_date.isoformat() if isinstance(payment_date, date) else None,
             "paymentDate": payment_date.isoformat() if isinstance(payment_date, date) else None,
+            "collected_by": self.collected_by,
+            "collectedBy": self.collected_by,
             "billing_period": self.billing_period,
             "billingPeriod": self.billing_period,
             "paid_at": to_iso(self.paid_at),

@@ -32,7 +32,7 @@ def list_all():
 
 @payment_bp.post("")
 @jwt_required()
-@role_required("institution_admin", "super_admin")
+@role_required("institution_admin", "super_admin", "teacher")
 def create():
     """Add a monthly fee payment record."""
     user = get_current_user()
@@ -62,7 +62,7 @@ def current_status(student_id):
 
 @payment_bp.put("/<int:payment_id>")
 @jwt_required()
-@role_required("institution_admin", "super_admin")
+@role_required("institution_admin", "super_admin", "teacher")
 def update(payment_id):
     """Update payment status / amount / date."""
     user = get_current_user()

@@ -90,7 +90,27 @@ def _enrich_payment_dict(payment: StudentPayment):
         payload["registration_no"] = student.registration_no
         payload["registrationNo"] = student.registration_no
         payload["grade"] = student.grade
+    collector = payment.collector
+    if collector is not None:
+        payload["collected_by_name"] = collector.full_name
+        payload["collectedByName"] = collector.full_name
+    elif payment.collected_by is not None:
+        user = User.query.get(payment.collected_by)
+        if user:
+            payload["collected_by_name"] = user.full_name
+            payload["collectedByName"] = user.full_name
     return payload
+
+
+def _can_manage_payments(user):
+    return user.role in ("institution_admin", "super_admin", "teacher")
+
+
+def _apply_collected_by(payment: StudentPayment, user, status: str):
+    if status == "Paid" and user.role == "teacher":
+        payment.collected_by = user.id
+    elif status != "Paid":
+        payment.collected_by = None
 
 
 def _current_period():
@@ -103,7 +123,7 @@ def get_or_build_current_payment_payload(student_id: int):
     month, year, period = _current_period()
     payment = StudentPayment.query.filter_by(student_id=student_id, billing_period=period).first()
     if payment:
-        return payment.to_dict(), payment
+        return _enrich_payment_dict(payment), payment
     return {
         "id": None,
         "student_id": student_id,
@@ -183,15 +203,33 @@ def list_payments(user, *, month=None, year=None, status=None, search=None, stud
         StudentPayment.id.desc(),
     ).all()
 
+    enriched = [_enrich_payment_dict(row) for row in rows]
+    paid_rows = [row for row in enriched if row.get("payment_status") == "Paid"]
+    pending_rows = [row for row in enriched if row.get("payment_status") != "Paid"]
+    total_collected = sum(float(row.get("amount") or 0) for row in paid_rows)
+
     return {
-        "payments": [_enrich_payment_dict(row) for row in rows],
-        "count": len(rows),
+        "payments": enriched,
+        "count": len(enriched),
+        "summary": {
+            "total_collected": total_collected,
+            "totalCollected": total_collected,
+            "paid_count": len(paid_rows),
+            "paidCount": len(paid_rows),
+            "pending_count": len(pending_rows),
+            "pendingCount": len(pending_rows),
+        },
     }, 200
 
 
 def create_payment(data, user):
-    if user.role not in ("institution_admin", "super_admin"):
+    if not _can_manage_payments(user):
         return {"errors": ["Access denied"]}, 403
+    if user.role == "teacher":
+        # Checkers may only create records when marking a fee as collected.
+        status_probe = _parse_status(data.get("payment_status") or data.get("paymentStatus") or "Pending")
+        if status_probe != "Paid":
+            return {"errors": ["Checkers can only create paid fee records"]}, 403
 
     student_id = data.get("student_id") or data.get("studentId")
     if student_id is None:
@@ -255,6 +293,7 @@ def create_payment(data, user):
         created_at=utc_now(),
         updated_at=utc_now(),
     )
+    _apply_collected_by(payment, user, status)
     payment.sync_period_fields()
     db.session.add(payment)
 
@@ -287,7 +326,7 @@ def get_student_payment_history(student_id, user):
         "student_name": student.user.full_name if student.user else None,
         "studentName": student.user.full_name if student.user else None,
         "grade": student.grade,
-        "payments": [row.to_dict() for row in rows],
+        "payments": [_enrich_payment_dict(row) for row in rows],
         "count": len(rows),
     }, 200
 
@@ -323,8 +362,20 @@ def get_current_student_payment(student_id, user):
 
 
 def update_payment(payment_id, data, user):
-    if user.role not in ("institution_admin", "super_admin"):
+    if not _can_manage_payments(user):
         return {"errors": ["Access denied"]}, 403
+    if user.role == "teacher":
+        allowed_keys = {"payment_status", "paymentStatus", "payment_date", "paymentDate"}
+        extra_keys = set(data.keys()) - allowed_keys
+        if extra_keys:
+            return {"errors": ["Checkers can only mark payments as Paid"]}, 403
+        status_probe = data.get("payment_status") if "payment_status" in data else data.get("paymentStatus")
+        if status_probe is not None:
+            parsed = _parse_status(status_probe)
+            if parsed != "Paid":
+                return {"errors": ["Checkers can only mark payments as Paid"]}, 403
+        else:
+            return {"errors": ["payment_status must be Paid"]}, 400
 
     payment = StudentPayment.query.get(payment_id)
     if not payment:
@@ -378,8 +429,10 @@ def update_payment(payment_id, data, user):
         if payment.payment_date is None:
             payment.payment_date = local_today()
         payment.paid_at = datetime.combine(payment.payment_date, datetime.min.time())
+        _apply_collected_by(payment, user, "Paid")
     else:
         payment.paid_at = None
+        payment.collected_by = None
         # Keep payment_date only if explicitly provided while pending; otherwise clear.
         if status_raw is not None:
             payment.payment_date = None

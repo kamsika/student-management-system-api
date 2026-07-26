@@ -283,6 +283,7 @@ def _apply_schema_updates(app):
             "year": "INT NULL",
             "amount": "DECIMAL(10,2) NULL",
             "payment_date": "DATE NULL",
+            "collected_by": "INT NULL",
             "created_at": "DATETIME NULL",
             "updated_at": "DATETIME NULL",
         }

@@ -15,7 +15,7 @@ from app.models import (
 from app.models.student_model import normalize_enrolled_subjects
 from app.utils.csv_utils import parse_students_csv, generate_students_template_csv
 from app.utils.student_id_utils import build_placeholder_emails, generate_next_registration_no
-from app.controllers.payment_controller import get_or_build_current_payment_payload
+from app.controllers.payment_controller import _enrich_payment_dict, get_or_build_current_payment_payload
 from app.models.student_payment_model import (
     billing_period_from_month_year,
     month_year_from_billing_period,
@@ -412,6 +412,7 @@ def update_student_payment_status(student_id, data, user):
             payment_status=status,
             payment_date=local_today() if status == "Paid" else None,
             paid_at=utc_now() if status == "Paid" else None,
+            collected_by=user.id if status == "Paid" and user.role == "teacher" else None,
             created_at=utc_now(),
             updated_at=utc_now(),
         )
@@ -428,12 +429,16 @@ def update_student_payment_status(student_id, data, user):
             payment.billing_period = period
         payment.payment_date = local_today() if status == "Paid" else None
         payment.paid_at = utc_now() if status == "Paid" else None
+        if status == "Paid" and user.role == "teacher":
+            payment.collected_by = user.id
+        elif status != "Paid":
+            payment.collected_by = None
         payment.sync_period_fields()
 
     try:
         db.session.commit()
         db.session.refresh(payment)
-        return {"success": True, "payment": payment.to_dict()}, 200
+        return {"success": True, "payment": _enrich_payment_dict(payment) if payment.id else payment.to_dict()}, 200
     except Exception:
         db.session.rollback()
         return {"errors": ["Failed to update payment status"]}, 500
