@@ -191,6 +191,16 @@ def _apply_schema_updates(app):
                     "ADD COLUMN subject_name VARCHAR(120) NOT NULL DEFAULT ''"
                 )
             )
+            attendance_cols.add("subject_name")
+
+        if "marked_via" not in attendance_cols:
+            db.session.execute(
+                text(
+                    "ALTER TABLE attendance "
+                    "ADD COLUMN marked_via VARCHAR(20) NOT NULL DEFAULT ''"
+                )
+            )
+            attendance_cols.add("marked_via")
 
         # Refresh inspector indexes after possible column add.
         inspector = inspect(db.engine)

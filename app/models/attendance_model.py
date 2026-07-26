@@ -16,6 +16,8 @@ class Attendance(db.Model):
     )
     # Subject from timetable auto-marking; empty string = general / non-timetable mark.
     subject_name = db.Column(db.String(120), nullable=False, default="", server_default="")
+    # How the mark was created: manual | qr | face | "" (legacy/unknown).
+    marked_via = db.Column(db.String(20), nullable=False, default="", server_default="")
     marked_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
 
     marker = db.relationship("User", foreign_keys=[marked_by])
@@ -46,6 +48,8 @@ class Attendance(db.Model):
             "status": self.status,
             "subject_name": self.subject_name or None,
             "subjectName": self.subject_name or None,
+            "marked_via": self.marked_via or None,
+            "markedVia": self.marked_via or None,
             "marked_by": self.marked_by,
             "student_name": student.user.full_name if student and student.user else None,
             "registration_no": student.registration_no if student else None,

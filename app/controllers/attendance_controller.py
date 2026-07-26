@@ -167,6 +167,9 @@ def mark_attendance(data, user):
     status_override = data.get("status")
     prevent_duplicate = bool(data.get("prevent_duplicate"))
     subject_name = (data.get("subject_name") or data.get("subjectName") or "").strip()
+    marked_via = (data.get("marked_via") or data.get("markedVia") or "").strip().lower()
+    if marked_via and marked_via not in ("manual", "qr", "face"):
+        marked_via = ""
 
     # Support both student_id (exact scanned QR text) and registration_no.
     scanned_id = ""
@@ -255,6 +258,8 @@ def mark_attendance(data, user):
             record.arrival_time = arrival_time if status != "Absent" else None
             record.marked_by = user.id
             record.subject_name = subject_name
+            if marked_via:
+                record.marked_via = marked_via
         else:
             record = Attendance(
                 student_id=student.id,
@@ -263,6 +268,7 @@ def mark_attendance(data, user):
                 arrival_time=arrival_time if status != "Absent" else None,
                 status=status,
                 subject_name=subject_name,
+                marked_via=marked_via,
                 marked_by=user.id,
             )
             db.session.add(record)
@@ -348,6 +354,7 @@ def create_attendance(data, user):
                 "date": attendance_date.isoformat(),
                 "prevent_duplicate": True,
                 "subject_name": "",
+                "marked_via": "face",
             },
             user,
         )
@@ -387,6 +394,7 @@ def create_attendance(data, user):
                 "date": attendance_date.isoformat(),
                 "prevent_duplicate": True,
                 "subject_name": subject,
+                "marked_via": "face",
             },
             user,
         )
@@ -431,6 +439,247 @@ def create_attendance(data, user):
         "attendance": primary,
         "records": created_records,
     }, http_status
+
+
+def save_manual_attendance(data, user):
+    """Bulk upsert attendance for a classroom/subject/date (teacher/admin manual marking)."""
+    from datetime import datetime, timezone
+
+    from app.utils import get_app_tz
+
+    classroom_id = data.get("classroomId") if data.get("classroomId") is not None else data.get("classroom_id")
+    subject_name = (data.get("subjectName") or data.get("subject_name") or "").strip()
+    date_raw = data.get("date")
+    marking_time_raw = data.get("markingTime") or data.get("marking_time") or data.get("arrivalTime")
+    entries = data.get("students") or data.get("entries") or []
+
+    if classroom_id is None or str(classroom_id).strip() == "":
+        return {"success": False, "errors": ["classroomId is required"]}, 400
+    try:
+        classroom_id = int(classroom_id)
+    except (TypeError, ValueError):
+        return {"success": False, "errors": ["classroomId must be an integer"]}, 400
+
+    if not subject_name:
+        return {"success": False, "errors": ["subjectName is required"]}, 400
+    if not isinstance(entries, list) or len(entries) == 0:
+        return {"success": False, "errors": ["students array is required"]}, 400
+
+    classroom, error, status_code = _authorize_classroom(
+        classroom_id, user, allow_super_admin=False
+    )
+    if error:
+        return {"success": False, **error}, status_code
+
+    attendance_date, date_error = parse_attendance_date(date_raw)
+    if date_error:
+        return {"success": False, "errors": [date_error]}, 400
+
+    # Resolve optional marking time (HH:MM) in app timezone → stored UTC.
+    arrival_time = utc_now()
+    if marking_time_raw is not None and str(marking_time_raw).strip() != "":
+        time_text = str(marking_time_raw).strip()
+        if "T" in time_text or time_text.endswith("Z"):
+            arrival_time = parse_incoming_timestamp(time_text)
+        else:
+            if len(time_text) == 8 and time_text.count(":") == 2:
+                time_text = time_text[:5]
+            try:
+                hour_str, minute_str = time_text.split(":")
+                hour, minute = int(hour_str), int(minute_str)
+                if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                    raise ValueError("out of range")
+                local_dt = datetime(
+                    attendance_date.year,
+                    attendance_date.month,
+                    attendance_date.day,
+                    hour,
+                    minute,
+                    tzinfo=get_app_tz(),
+                )
+                arrival_time = local_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            except (TypeError, ValueError):
+                return {
+                    "success": False,
+                    "errors": ["markingTime must be HH:MM"],
+                }, 400
+
+    saved = []
+    errors = []
+
+    try:
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                errors.append(f"students[{index}] must be an object")
+                continue
+
+            raw_student_id = entry.get("studentId")
+            if raw_student_id is None:
+                raw_student_id = entry.get("student_id")
+            status = (entry.get("status") or "").strip()
+
+            if raw_student_id is None or str(raw_student_id).strip() == "":
+                errors.append(f"students[{index}].studentId is required")
+                continue
+            try:
+                student_id = int(raw_student_id)
+            except (TypeError, ValueError):
+                errors.append(f"students[{index}].studentId must be an integer")
+                continue
+
+            if status not in ("Present", "Absent", "Late"):
+                errors.append(f"students[{index}].status must be Present, Absent, or Late")
+                continue
+
+            student = Student.query.get(student_id)
+            if not student or student.institution_id != classroom.institution_id:
+                errors.append(f"Student {student_id} not found in this center")
+                continue
+
+            record = Attendance.query.filter_by(
+                student_id=student.id,
+                classroom_id=classroom.id,
+                date=attendance_date,
+                subject_name=subject_name,
+            ).first()
+
+            mark_time = arrival_time if status != "Absent" else None
+
+            if record:
+                record.status = status
+                record.arrival_time = mark_time
+                record.marked_by = user.id
+                record.marked_via = "manual"
+            else:
+                record = Attendance(
+                    student_id=student.id,
+                    classroom_id=classroom.id,
+                    date=attendance_date,
+                    arrival_time=mark_time,
+                    status=status,
+                    subject_name=subject_name,
+                    marked_via="manual",
+                    marked_by=user.id,
+                )
+                db.session.add(record)
+
+            saved.append(record)
+
+        if errors and not saved:
+            db.session.rollback()
+            return {"success": False, "errors": errors}, 400
+
+        db.session.commit()
+        for record in saved:
+            db.session.refresh(record)
+
+        return {
+            "success": True,
+            "message": f"Saved attendance for {len(saved)} student(s)",
+            "classroomId": classroom.id,
+            "subjectName": subject_name,
+            "date": attendance_date.isoformat(),
+            "markingTime": marking_time_raw,
+            "markedVia": "manual",
+            "count": len(saved),
+            "records": [record.to_dict() for record in saved],
+            "errors": errors or None,
+        }, 200
+    except Exception as exc:
+        db.session.rollback()
+        print(f"[ATTENDANCE] save_manual_attendance failed: {exc}")
+        return {"success": False, "errors": ["Failed to save manual attendance"]}, 500
+
+
+def get_manual_attendance_roster(user, classroom_id=None, subject_name=None, date_str=None):
+    """Roster + current status for manual marking (filtered by subject when provided)."""
+    if classroom_id is None or str(classroom_id).strip() == "":
+        return {"errors": ["classroomId is required"]}, 400
+    try:
+        classroom_id = int(classroom_id)
+    except (TypeError, ValueError):
+        return {"errors": ["classroomId must be an integer"]}, 400
+
+    subject_name = (subject_name or "").strip()
+    classroom, error, status_code = _authorize_classroom(
+        classroom_id, user, allow_super_admin=False
+    )
+    if error:
+        return error, status_code
+
+    attendance_date, date_error = parse_attendance_date(date_str)
+    if date_error:
+        return {"errors": [date_error]}, 400
+
+    students = (
+        Student.query.join(User, Student.user_id == User.id)
+        .filter(
+            Student.institution_id == classroom.institution_id,
+            User.is_active.is_(True),
+        )
+        .order_by(User.full_name.asc(), Student.registration_no.asc())
+        .all()
+    )
+
+    query = Attendance.query.filter_by(classroom_id=classroom.id, date=attendance_date)
+    if subject_name:
+        query = query.filter_by(subject_name=subject_name)
+    attendance_rows = query.all()
+
+    attendance_map = {}
+    for record in attendance_rows:
+        if subject_name:
+            attendance_map[record.student_id] = record
+            continue
+        current = attendance_map.get(record.student_id)
+        if current is None:
+            attendance_map[record.student_id] = record
+            continue
+        rank = {"Present": 3, "Late": 2, "Absent": 1}
+        if rank.get(record.status, 0) > rank.get(current.status, 0):
+            attendance_map[record.student_id] = record
+
+    # Distinct subjects available for this classroom from timetable + existing marks.
+    from app.models import Timetable
+
+    subject_set = set()
+    for slot in Timetable.query.filter_by(classroom_id=classroom.id).all():
+        if slot.subject_name:
+            subject_set.add(slot.subject_name)
+    for record in Attendance.query.filter(
+        Attendance.classroom_id == classroom.id,
+        Attendance.subject_name != "",
+    ).all():
+        subject_set.add(record.subject_name)
+
+    roster = []
+    for student in students:
+        record = attendance_map.get(student.id)
+        roster.append(
+            {
+                "studentId": student.id,
+                "fullName": student.user.full_name if student.user else None,
+                "registrationNo": student.registration_no,
+                "status": record.status if record else None,
+                "statusIndicator": {
+                    "Present": "🟢",
+                    "Absent": "🔴",
+                    "Late": "🟡",
+                }.get(record.status if record else "", ""),
+                "markedVia": record.marked_via if record else None,
+                "arrivalTime": record.to_dict().get("arrival_time") if record else None,
+                "attendance": record.to_dict() if record else None,
+            }
+        )
+
+    return {
+        "classroom": classroom.to_dict(),
+        "subjectName": subject_name or None,
+        "date": attendance_date.isoformat(),
+        "subjects": sorted(subject_set),
+        "students": roster,
+        "count": len(roster),
+    }, 200
 
 
 def scan_center_attendance(data, user):

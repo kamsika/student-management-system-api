@@ -7,9 +7,11 @@ from app.controllers.attendance_controller import (
     create_attendance,
     get_attendance_report,
     get_classroom_attendance,
+    get_manual_attendance_roster,
     get_student_attendance,
     get_today_center_attendance,
     mark_attendance,
+    save_manual_attendance,
     scan_center_attendance,
 )
 from app.middleware import get_current_user, role_required
@@ -41,6 +43,32 @@ def mark():
     body = request.get_json(silent=True) or {}
     print(f"[ATTENDANCE] /mark Received attendance request for ID: {body.get('student_id')!r}")
     result, status = mark_attendance(body, user)
+    return result, status
+
+
+@attendance_bp.post("/manual")
+@jwt_required()
+@role_required("teacher", "institution_admin")
+def manual_save():
+    """Bulk upsert manual attendance for classroom + subject + date."""
+    user = get_current_user()
+    body = request.get_json(silent=True) or {}
+    result, status = save_manual_attendance(body, user)
+    return result, status
+
+
+@attendance_bp.get("/manual")
+@jwt_required()
+@role_required("teacher", "institution_admin")
+def manual_roster():
+    """Fetch class roster with current status for manual marking UI."""
+    user = get_current_user()
+    result, status = get_manual_attendance_roster(
+        user,
+        classroom_id=request.args.get("classroomId") or request.args.get("classroom_id"),
+        subject_name=request.args.get("subjectName") or request.args.get("subject_name"),
+        date_str=request.args.get("date"),
+    )
     return result, status
 
 
