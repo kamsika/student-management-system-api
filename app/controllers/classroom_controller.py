@@ -270,3 +270,159 @@ def create_classroom(data, user):
     except Exception:
         db.session.rollback()
         return {"errors": ["Failed to create classroom"]}, 500
+
+
+def _authorize_classroom_write(classroom_id, user):
+    if user.role not in ("institution_admin", "super_admin"):
+        return None, {"errors": ["Access denied"]}, 403
+
+    classroom = Classroom.query.get(classroom_id)
+    if not classroom:
+        return None, {"errors": ["Classroom not found"]}, 404
+
+    if user.role == "institution_admin" and classroom.institution_id != user.institution_id:
+        return None, {"errors": ["Access denied"]}, 403
+
+    return classroom, None, None
+
+
+def get_classroom(classroom_id, user):
+    if user.role not in ("institution_admin", "super_admin", "teacher"):
+        return {"errors": ["Access denied"]}, 403
+
+    classroom = Classroom.query.get(classroom_id)
+    if not classroom:
+        return {"errors": ["Classroom not found"]}, 404
+
+    if user.role == "institution_admin" and classroom.institution_id != user.institution_id:
+        return {"errors": ["Access denied"]}, 403
+    if user.role == "teacher" and (
+        classroom.institution_id != user.institution_id or classroom.teacher_id != user.id
+    ):
+        # Teachers may also be assigned via subject_teachers
+        assigned_ids = {item["teacher_id"] for item in classroom.get_subject_teachers()}
+        if classroom.teacher_id != user.id and user.id not in assigned_ids:
+            return {"errors": ["Access denied"]}, 403
+
+    slots = (
+        Timetable.query.filter_by(classroom_id=classroom.id)
+        .filter(Timetable.student_id.is_(None))
+        .order_by(Timetable.day_of_week.asc(), Timetable.start_time.asc())
+        .all()
+    )
+    payload = classroom.to_dict()
+    payload["timetable"] = [slot.to_dict() for slot in slots]
+    return {"classroom": payload}, 200
+
+
+def update_classroom(classroom_id, data, user):
+    classroom, error, status = _authorize_classroom_write(classroom_id, user)
+    if error:
+        return error, status
+
+    institution_id = classroom.institution_id
+    name = (data.get("name") or "").strip()
+    grade = (data.get("grade") or "").strip() or None
+    schedule_start_time = data.get("schedule_start_time") or data.get("scheduleStartTime")
+    teacher_id = data.get("teacher_id") or data.get("teacherId")
+
+    subject_teachers_raw = data.get("subject_teachers")
+    if subject_teachers_raw is None:
+        subject_teachers_raw = data.get("subjectTeachers")
+
+    timetable_raw = data.get("timetable")
+    if timetable_raw is None:
+        timetable_raw = data.get("timetable_slots") or data.get("timetableSlots")
+
+    if not name:
+        return {"errors": ["Classroom name is required"]}, 400
+    if not grade:
+        return {"errors": ["Grade is required"]}, 400
+    if subject_teachers_raw is None:
+        return {"errors": ["Subject & Teacher Assignment is required"]}, 400
+    if timetable_raw is None:
+        return {"errors": ["Weekly timetable is required"]}, 400
+
+    assignments, assign_error = _normalize_subject_teachers(subject_teachers_raw, institution_id)
+    if assign_error:
+        return {"errors": [assign_error]}, 400
+    if not assignments:
+        return {"errors": ["Add at least one subject with an assigned teacher"]}, 400
+
+    slots, slot_error = _normalize_timetable_slots(timetable_raw, assignments, institution_id)
+    if slot_error:
+        return {"errors": [slot_error]}, 400
+    if not slots:
+        return {"errors": ["Add at least one timetable slot"]}, 400
+
+    if not teacher_id:
+        teacher_id = assignments[0]["teacher_id"]
+    if not schedule_start_time:
+        schedule_start_time = min(slot["start_time"] for slot in slots)
+
+    try:
+        teacher_id = int(teacher_id)
+    except (TypeError, ValueError):
+        return {"errors": ["teacher_id must be an integer"]}, 400
+
+    teacher = User.query.filter_by(
+        id=teacher_id,
+        institution_id=institution_id,
+        role="teacher",
+    ).first()
+    if not teacher:
+        return {"errors": ["Teacher not found in institution"]}, 404
+
+    try:
+        time_text = str(schedule_start_time).strip()
+        if len(time_text) == 8 and time_text.count(":") == 2:
+            time_text = time_text[:5]
+        parsed_time = (
+            dt.strptime(time_text, "%H:%M").time()
+            if len(time_text) == 5
+            else dt.strptime(time_text, "%H:%M:%S").time()
+        )
+
+        classroom.name = name
+        classroom.grade = grade
+        classroom.schedule_start_time = parsed_time
+        classroom.teacher_id = teacher_id
+        classroom.subject_teachers = assignments
+
+        Timetable.query.filter(
+            Timetable.classroom_id == classroom.id,
+            Timetable.student_id.is_(None),
+        ).delete(synchronize_session=False)
+
+        for slot in slots:
+            db.session.add(
+                Timetable(
+                    tenant_id=institution_id,
+                    classroom_id=classroom.id,
+                    student_id=None,
+                    teacher_id=slot["teacher_id"],
+                    day_of_week=slot["day_of_week"],
+                    subject_name=slot["subject_name"],
+                    start_time=slot["start_time"],
+                    end_time=slot["end_time"],
+                )
+            )
+
+        db.session.commit()
+        payload = classroom.to_dict()
+        payload["timetable"] = [
+            item.to_dict()
+            for item in Timetable.query.filter(
+                Timetable.classroom_id == classroom.id,
+                Timetable.student_id.is_(None),
+            )
+            .order_by(Timetable.day_of_week.asc(), Timetable.start_time.asc())
+            .all()
+        ]
+        return {"classroom": payload}, 200
+    except ValueError:
+        db.session.rollback()
+        return {"errors": ["Invalid schedule_start_time format. Use HH:MM"]}, 400
+    except Exception:
+        db.session.rollback()
+        return {"errors": ["Failed to update classroom"]}, 500
