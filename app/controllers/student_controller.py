@@ -15,6 +15,11 @@ from app.models import (
 from app.models.student_model import normalize_enrolled_subjects
 from app.utils.csv_utils import parse_students_csv, generate_students_template_csv
 from app.utils.student_id_utils import build_placeholder_emails, generate_next_registration_no
+from app.controllers.payment_controller import get_or_build_current_payment_payload
+from app.models.student_payment_model import (
+    billing_period_from_month_year,
+    month_year_from_billing_period,
+)
 from app.utils import local_today, utc_now
 
 
@@ -162,6 +167,14 @@ def _student_detail_dict(student, user=None):
             payload["grade"] = classroom.grade
     else:
         payload["classroom"] = None
+
+    payment_payload, _payment = get_or_build_current_payment_payload(student.id)
+    payload["monthlyPayment"] = payment_payload
+    payload["monthly_payment"] = payment_payload
+    payload["currentMonthFee"] = payment_payload
+    payload["current_month_fee"] = payment_payload
+    payload["paymentStatus"] = payment_payload.get("payment_status")
+    payload["payment_status"] = payment_payload.get("payment_status")
     return payload
 
 
@@ -375,6 +388,15 @@ def update_student_payment_status(student_id, data, user):
     if status not in ("Pending", "Paid", "Overdue"):
         return {"errors": ["paymentStatus must be Pending, Paid, or Overdue"]}, 400
 
+    month, year = month_year_from_billing_period(period)
+    amount = data.get("amount")
+    if amount is None:
+        amount = data.get("amount_due")
+    try:
+        amount_value = float(amount) if amount is not None and str(amount).strip() != "" else None
+    except (TypeError, ValueError):
+        return {"errors": ["amount must be a number"]}, 400
+
     payment = StudentPayment.query.filter_by(
         student_id=student.id,
         billing_period=period,
@@ -382,14 +404,31 @@ def update_student_payment_status(student_id, data, user):
     if payment is None:
         payment = StudentPayment(
             student_id=student.id,
-            billing_period=period,
+            billing_period=period or billing_period_from_month_year(month or local_today().month, year or local_today().year),
+            month=month,
+            year=year,
+            amount=amount_value,
+            amount_due=amount_value,
             payment_status=status,
+            payment_date=local_today() if status == "Paid" else None,
             paid_at=utc_now() if status == "Paid" else None,
+            created_at=utc_now(),
+            updated_at=utc_now(),
         )
+        payment.sync_period_fields()
         db.session.add(payment)
     else:
         payment.payment_status = status
+        if amount_value is not None:
+            payment.amount = amount_value
+            payment.amount_due = amount_value
+        if month and year:
+            payment.month = month
+            payment.year = year
+            payment.billing_period = period
+        payment.payment_date = local_today() if status == "Paid" else None
         payment.paid_at = utc_now() if status == "Paid" else None
+        payment.sync_period_fields()
 
     try:
         db.session.commit()

@@ -9,6 +9,7 @@ from app.routes.parent_routes import parent_bp
 from app.routes.teacher_routes import teacher_bp
 from app.routes.timetable_routes import timetable_bp
 from app.routes.subject_routes import subject_bp
+from app.routes.payment_routes import payment_bp
 
 __all__ = [
     "auth_bp",
@@ -22,4 +23,5 @@ __all__ = [
     "teacher_bp",
     "timetable_bp",
     "subject_bp",
+    "payment_bp",
 ]

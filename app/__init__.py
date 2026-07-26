@@ -11,6 +11,7 @@ from app.routes import (
     classroom_bp,
     institution_bp,
     parent_bp,
+    payment_bp,
     sms_log_bp,
     study_log_bp,
     student_bp,
@@ -85,6 +86,7 @@ def create_app(config_class=Config):
     app.register_blueprint(teacher_bp)
     app.register_blueprint(timetable_bp)
     app.register_blueprint(subject_bp)
+    app.register_blueprint(payment_bp)
 
     @app.errorhandler(404)
     def not_found(_error):
@@ -272,6 +274,48 @@ def _apply_schema_updates(app):
                     "(student_id, classroom_id, date, subject_name)"
                 )
             )
+
+    # Student fee payments: add month/year/amount/payment_date timestamps.
+    if "student_payments" in table_names:
+        payment_cols = {column["name"] for column in inspector.get_columns("student_payments")}
+        payment_additions = {
+            "month": "INT NULL",
+            "year": "INT NULL",
+            "amount": "DECIMAL(10,2) NULL",
+            "payment_date": "DATE NULL",
+            "created_at": "DATETIME NULL",
+            "updated_at": "DATETIME NULL",
+        }
+        for column_name, column_type in payment_additions.items():
+            if column_name not in payment_cols:
+                db.session.execute(
+                    text(f"ALTER TABLE student_payments ADD COLUMN {column_name} {column_type}")
+                )
+                payment_cols.add(column_name)
+
+        # Backfill month/year from billing_period (YYYY-MM).
+        db.session.execute(
+            text(
+                """
+                UPDATE student_payments
+                SET
+                  year = CASE
+                    WHEN year IS NULL AND billing_period IS NOT NULL AND CHAR_LENGTH(billing_period) = 7
+                      THEN CAST(SUBSTRING(billing_period, 1, 4) AS UNSIGNED)
+                    ELSE year
+                  END,
+                  month = CASE
+                    WHEN month IS NULL AND billing_period IS NOT NULL AND CHAR_LENGTH(billing_period) = 7
+                      THEN CAST(SUBSTRING(billing_period, 6, 2) AS UNSIGNED)
+                    ELSE month
+                  END,
+                  amount = COALESCE(amount, amount_due),
+                  payment_date = COALESCE(payment_date, DATE(paid_at)),
+                  created_at = COALESCE(created_at, UTC_TIMESTAMP()),
+                  updated_at = COALESCE(updated_at, UTC_TIMESTAMP())
+                """
+            )
+        )
 
     db.session.commit()
 
