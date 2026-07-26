@@ -296,8 +296,15 @@ def mark_attendance(data, user):
 
 
 def create_attendance(data, user):
-    """Kiosk/QR attendance: mark ONLY active timetable subjects for today."""
-    from app.utils.timetable_auto_mark import resolve_auto_mark_subjects
+    """Kiosk/QR attendance with timetable continuous-class selection.
+
+    Phase 1 (no selectedSubjectIds): return selectableSubjects for checkbox UI.
+    Phase 2 (selectedSubjectIds provided): mark only the checked timetable slots.
+    """
+    from app.utils.timetable_auto_mark import (
+        resolve_auto_mark_subjects,
+        resolve_student_classroom_id,
+    )
 
     student_id = data.get("studentId")
     classroom_id = data.get("classroomId")
@@ -305,6 +312,11 @@ def create_attendance(data, user):
     marked_via = (data.get("markedVia") or data.get("marked_via") or "face").strip().lower()
     if marked_via not in ("face", "qr", "manual"):
         marked_via = "face"
+
+    raw_selected = data.get("selectedSubjectIds")
+    if raw_selected is None:
+        raw_selected = data.get("selected_subject_ids")
+    has_selection_payload = raw_selected is not None
 
     if student_id is None or str(student_id).strip() == "":
         return {"success": False, "errors": ["studentId is required"]}, 400
@@ -321,14 +333,16 @@ def create_attendance(data, user):
 
     attendance_date = local_today()
     enrolled_subjects = student.get_enrolled_subjects()
+    student_name = student.user.full_name if student.user else "Student"
 
+    preferred_classroom_id = None
     if classroom_id is not None and str(classroom_id).strip() != "":
         try:
-            classroom_id = int(classroom_id)
+            preferred_classroom_id = int(classroom_id)
         except (TypeError, ValueError):
             return {"success": False, "errors": ["classroomId must be an integer"]}, 400
         classroom, error, error_status = _authorize_classroom(
-            classroom_id, user, allow_super_admin=False
+            preferred_classroom_id, user, allow_super_admin=False
         )
         if error:
             return {"success": False, **error}, error_status
@@ -345,18 +359,39 @@ def create_attendance(data, user):
                 "errors": ["classroomId is required when more than one classroom is available"],
             }, 400
         classroom = classrooms[0]
+        preferred_classroom_id = classroom.id
+
+    # Prefer the student's own classroom/grade timetable over a generic scanner classroom.
+    resolved_classroom_id = resolve_student_classroom_id(
+        student,
+        preferred_classroom_id=preferred_classroom_id,
+        teacher_user=user,
+    )
+    if resolved_classroom_id is not None and int(resolved_classroom_id) != int(classroom.id):
+        resolved_classroom, resolve_error, resolve_status = _authorize_classroom(
+            resolved_classroom_id, user, allow_super_admin=False
+        )
+        if resolve_error:
+            print(
+                f"[ATTENDANCE] Student classroom {resolved_classroom_id} not writable "
+                f"by user {user.id}; using scanner classroom {classroom.id}"
+            )
+        else:
+            classroom = resolved_classroom
 
     plan = resolve_auto_mark_subjects(
         student.id,
         classroom_id=classroom.id,
         enrolled_subjects=enrolled_subjects,
     )
-    # Active timetable subjects only (already intersected with enrolled when set).
-    subjects = list(plan.get("subjects") or [])
     eligible_slots = list(plan.get("eligibleSlots") or [])
+    selectable_subjects = list(plan.get("selectableSubjects") or [])
+    scheduled_subjects = list(plan.get("scheduledSubjects") or [])
+    continuous_group = bool(plan.get("continuousGroup"))
 
     today_timetable = [
         {
+            "id": slot.id,
             "subjectName": slot.subject_name,
             "subject_name": slot.subject_name,
             "startTime": slot.start_time,
@@ -383,46 +418,137 @@ def create_attendance(data, user):
     def _slot_time_range(slot):
         return f"{_format_clock(slot.start_time)} - {_format_clock(slot.end_time)}"
 
-    def _scan_extras(
-        *,
-        marked=None,
-        newly_marked=None,
-        already_marked=None,
-        present_details=None,
-        already_details=None,
-    ):
-        marked_list = marked or []
-        return {
+    def _base_payload(**extra):
+        payload = {
             "studentId": student.id,
             "student_id": student.id,
             "studentName": student.user.full_name if student.user else None,
             "student_name": student.user.full_name if student.user else None,
             "registrationNo": student.registration_no,
             "registration_no": student.registration_no,
+            "grade": student.grade,
+            "section": student.section,
+            "classroomId": classroom.id,
+            "classroom_id": classroom.id,
+            "classroomName": classroom.name,
+            "classroom_name": classroom.name,
             "enrolledSubjects": enrolled_subjects,
             "enrolled_subjects": enrolled_subjects,
             "todayTimetable": today_timetable,
             "today_timetable": today_timetable,
-            "markedAttendanceSubjects": marked_list,
-            "marked_attendance_subjects": marked_list,
-            "autoMarkedSubjects": marked_list,
-            "newlyMarkedSubjects": newly_marked or [],
-            "alreadyMarkedSubjects": already_marked or [],
-            "presentNowDetails": present_details or [],
-            "present_now_details": present_details or [],
-            "alreadyMarkedDetails": already_details or [],
-            "already_marked_details": already_details or [],
-            # Backward-compatible combined labels for older clients.
-            "autoMarkedDetails": (present_details or []) + (already_details or []),
-            "auto_marked_details": (present_details or []) + (already_details or []),
+            "selectableSubjects": selectable_subjects,
+            "selectable_subjects": selectable_subjects,
+            "scheduledSubjects": scheduled_subjects,
+            "scheduled_subjects": scheduled_subjects,
+            "continuousGroup": continuous_group,
+            "continuous_group": continuous_group,
+            "requiresSelection": not has_selection_payload and len(selectable_subjects) > 0,
+            "requires_selection": not has_selection_payload and len(selectable_subjects) > 0,
             "dayOfWeek": plan.get("dayOfWeek"),
             "currentTime": plan.get("currentTime"),
+            "timezone": plan.get("timezone"),
         }
+        payload.update(extra)
+        return payload
+
+    # No active enrolled timetable slot right now.
+    if not eligible_slots:
+        no_class_message = f"No active class scheduled at this time for {student_name}"
+        return {
+            "success": True,
+            "status": "NoClass",
+            "message": no_class_message,
+            "error": no_class_message,
+            "data": None,
+            "attendance": None,
+            "markedAttendanceSubjects": [],
+            "autoMarkedSubjects": [],
+            **_base_payload(requiresSelection=False, requires_selection=False),
+        }, 200
+
+    # Phase 1: return checkbox options without writing attendance.
+    if not has_selection_payload:
+        return {
+            "success": True,
+            "status": "SelectSubjects",
+            "message": (
+                "Select continuous subjects to mark"
+                if continuous_group
+                else "Confirm the current class to mark"
+            ),
+            "data": None,
+            "attendance": None,
+            "markedAttendanceSubjects": [],
+            "autoMarkedSubjects": [],
+            **_base_payload(),
+        }, 200
+
+    # Phase 2: mark only checked timetable slot IDs.
+    if not isinstance(raw_selected, (list, tuple)):
+        return {"success": False, "errors": ["selectedSubjectIds must be an array"]}, 400
+
+    selected_ids = []
+    for value in raw_selected:
+        try:
+            selected_ids.append(int(value))
+        except (TypeError, ValueError):
+            return {"success": False, "errors": ["selectedSubjectIds must contain integers"]}, 400
+
+    if not selected_ids:
+        return {"success": False, "errors": ["Select at least one subject to mark"]}, 400
+
+    eligible_by_id = {slot.id: slot for slot in eligible_slots}
+    invalid = [slot_id for slot_id in selected_ids if slot_id not in eligible_by_id]
+    if invalid:
+        return {
+            "success": False,
+            "errors": [
+                "selectedSubjectIds must be from the current continuous/active timetable window",
+                f"invalidIds={invalid}",
+            ],
+        }, 400
+
+    # Preserve timetable order when marking.
+    slots_to_mark = [slot for slot in eligible_slots if slot.id in set(selected_ids)]
+
+    created_records = []
+    already_marked = []
+    newly_marked = []
+
+    for slot in slots_to_mark:
+        result, result_status = mark_attendance(
+            {
+                "student_id": student.id,
+                "classroom_id": classroom.id,
+                "status": "Present",
+                "scanned_at": timestamp,
+                "date": attendance_date.isoformat(),
+                "prevent_duplicate": True,
+                "subject_name": slot.subject_name,
+                "marked_via": marked_via,
+            },
+            user,
+        )
+        if result_status == 409 and result.get("already_scanned"):
+            already_marked.append(slot.subject_name)
+            created_records.append(result.get("attendance"))
+            continue
+        if result_status >= 400:
+            return {
+                "success": False,
+                **result,
+                "markedAttendanceSubjects": newly_marked,
+                "autoMarkedSubjects": newly_marked,
+                "enrolledSubjects": enrolled_subjects,
+                "selectableSubjects": selectable_subjects,
+            }, result_status
+        newly_marked.append(slot.subject_name)
+        created_records.append(result.get("attendance"))
 
     def _build_subject_details(subject_names, *, already=False):
         wanted = {name.lower() for name in (subject_names or [])}
         details = []
-        for index, slot in enumerate(eligible_slots):
+        for index, slot in enumerate(slots_to_mark):
             if slot.subject_name.lower() not in wanted:
                 continue
             time_range = _slot_time_range(slot)
@@ -435,6 +561,8 @@ def create_attendance(data, user):
                     label = f"{slot.subject_name} ({time_range}) · Continuous Class"
             details.append(
                 {
+                    "id": slot.id,
+                    "subjectId": slot.id,
                     "subjectName": slot.subject_name,
                     "subject_name": slot.subject_name,
                     "status": "Present",
@@ -449,72 +577,10 @@ def create_attendance(data, user):
                     "label": label,
                 }
             )
-        if not details:
-            for name in subject_names or []:
-                label = f"Already marked for {name}." if already else f"{name} - Present"
-                details.append(
-                    {
-                        "subjectName": name,
-                        "subject_name": name,
-                        "status": "Present",
-                        "alreadyMarked": already,
-                        "already_marked": already,
-                        "continuousClass": False,
-                        "continuous_class": False,
-                        "timeRange": None,
-                        "time_range": None,
-                        "label": label,
-                    }
-                )
         return details
-
-    # No active timetable class right now → do NOT mark other enrolled subjects.
-    if not subjects:
-        return {
-            "success": True,
-            "status": "NoClass",
-            "message": "No timetable class is scheduled for this student at the current time",
-            "data": None,
-            "attendance": None,
-            **_scan_extras(marked=[]),
-        }, 200
-
-    created_records = []
-    already_marked = []
-    newly_marked = []
-
-    for subject in subjects:
-        result, result_status = mark_attendance(
-            {
-                "student_id": student.id,
-                "classroom_id": classroom.id,
-                "status": "Present",
-                "scanned_at": timestamp,
-                "date": attendance_date.isoformat(),
-                "prevent_duplicate": True,
-                "subject_name": subject,
-                "marked_via": marked_via,
-            },
-            user,
-        )
-        if result_status == 409 and result.get("already_scanned"):
-            already_marked.append(subject)
-            created_records.append(result.get("attendance"))
-            continue
-        if result_status >= 400:
-            return {
-                "success": False,
-                **result,
-                "markedAttendanceSubjects": newly_marked,
-                "autoMarkedSubjects": newly_marked,
-                "enrolledSubjects": enrolled_subjects,
-            }, result_status
-        newly_marked.append(subject)
-        created_records.append(result.get("attendance"))
 
     present_details = _build_subject_details(newly_marked, already=False)
     already_details = _build_subject_details(already_marked, already=True)
-    # Subjects touched on this scan (new or confirmed already for active slot).
     marked = newly_marked + [name for name in already_marked if name not in newly_marked]
 
     if newly_marked and already_marked:
@@ -529,9 +595,8 @@ def create_attendance(data, user):
         response_status = "Present"
         http_status = 201
     else:
-        # Same active slot scanned again — per-subject warning, not full-day block.
         message = " ".join(f"Already marked for {name}." for name in already_marked) or (
-            "Already marked for the current class."
+            "Already marked for the selected class."
         )
         response_status = "AlreadyMarked"
         http_status = 200
@@ -544,13 +609,19 @@ def create_attendance(data, user):
         "data": primary,
         "attendance": primary,
         "records": created_records,
-        **_scan_extras(
-            marked=marked,
-            newly_marked=newly_marked,
-            already_marked=already_marked,
-            present_details=present_details,
-            already_details=already_details,
-        ),
+        "markedAttendanceSubjects": marked,
+        "marked_attendance_subjects": marked,
+        "autoMarkedSubjects": marked,
+        "newlyMarkedSubjects": newly_marked,
+        "alreadyMarkedSubjects": already_marked,
+        "presentNowDetails": present_details,
+        "present_now_details": present_details,
+        "alreadyMarkedDetails": already_details,
+        "already_marked_details": already_details,
+        "autoMarkedDetails": present_details + already_details,
+        "selectedSubjectIds": selected_ids,
+        "selected_subject_ids": selected_ids,
+        **_base_payload(requiresSelection=False, requires_selection=False),
     }, http_status
 
 
@@ -822,6 +893,7 @@ def scan_center_attendance(data, user):
         return {"errors": [f"Student not found in your center: {scanned_id}"]}, 404
 
     # Reuse kiosk timetable auto-marking for QR scans as well.
+    # Reuse kiosk timetable selection flow for QR scans as well.
     return create_attendance(
         {
             "studentId": student.id,
@@ -829,6 +901,9 @@ def scan_center_attendance(data, user):
             "timestamp": data.get("scanned_at"),
             "status": "Present",
             "markedVia": "qr",
+            "selectedSubjectIds": data.get("selectedSubjectIds")
+            if "selectedSubjectIds" in data
+            else data.get("selected_subject_ids"),
         },
         user,
     )
