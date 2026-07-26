@@ -11,6 +11,7 @@ from app.controllers.student_controller import (
     list_teachers,
     save_student_face,
     update_student,
+    update_student_subjects,
 )
 from app.middleware import get_current_user, role_required
 
@@ -22,7 +23,10 @@ student_bp = Blueprint("students", __name__, url_prefix="/api/students")
 @role_required("institution_admin", "teacher", "super_admin")
 def list_all():
     user = get_current_user()
-    result, status = list_students(user)
+    result, status = list_students(
+        user,
+        search=request.args.get("search") or request.args.get("q"),
+    )
     return result, status
 
 
@@ -42,6 +46,18 @@ def create_one():
 def update_one(student_id):
     user = get_current_user()
     result, status = update_student(student_id, request.get_json(silent=True) or {}, user)
+    return result, status
+
+
+@student_bp.put("/<int:student_id>/subjects")
+@jwt_required()
+@role_required("institution_admin", "teacher", "super_admin")
+def update_subjects(student_id):
+    """Update enrolled subjects for a specific student."""
+    user = get_current_user()
+    result, status = update_student_subjects(
+        student_id, request.get_json(silent=True) or {}, user
+    )
     return result, status
 
 
