@@ -5,10 +5,12 @@ from app.controllers.student_controller import (
     create_student,
     get_import_template,
     get_parent_children,
+    get_student,
     import_students,
     list_face_profiles,
     list_students,
     list_teachers,
+    lookup_student,
     save_student_face,
     update_student,
     update_student_subjects,
@@ -29,6 +31,34 @@ def list_all():
         search=request.args.get("search") or request.args.get("q"),
         grade=request.args.get("grade"),
     )
+    return result, status
+
+
+@student_bp.get("/lookup")
+@jwt_required()
+@role_required("institution_admin", "teacher", "super_admin")
+def lookup_one():
+    """Resolve a scanned QR student id / registration no to full student details."""
+    user = get_current_user()
+    scanned_id = (
+        request.args.get("student_id")
+        or request.args.get("studentId")
+        or request.args.get("registration_no")
+        or request.args.get("registrationNo")
+        or request.args.get("q")
+        or request.args.get("id")
+        or ""
+    )
+    result, status = lookup_student(scanned_id, user)
+    return result, status
+
+
+@student_bp.get("/<int:student_id>")
+@jwt_required()
+@role_required("institution_admin", "teacher", "super_admin")
+def get_one(student_id):
+    user = get_current_user()
+    result, status = get_student(student_id, user)
     return result, status
 
 

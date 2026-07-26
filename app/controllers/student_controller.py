@@ -2,7 +2,7 @@ from sqlalchemy import func, or_
 import re
 
 from app.extensions import db
-from app.models import Classroom, Institution, Student, StudentPayment, Timetable, User
+from app.models import Classroom, Institution, Student, StudentPayment, Subject, Timetable, User
 from app.models.student_model import normalize_enrolled_subjects
 from app.utils.csv_utils import parse_students_csv, generate_students_template_csv
 from app.utils.student_id_utils import build_placeholder_emails, generate_next_registration_no
@@ -28,7 +28,7 @@ def _resolve_student_classroom(student, user=None):
     """Best-effort classroom for display (teacher class, timetable, or center default)."""
     if user is not None and user.role == "teacher" and user.institution_id:
         classroom = (
-            Classroom.query.filter_by(teacher_id=user.id, institution_id=user.institution_id)
+            Classroom.query.filter_by(institution_id=user.institution_id)
             .order_by(Classroom.name.asc())
             .first()
         )
@@ -52,8 +52,54 @@ def _resolve_student_classroom(student, user=None):
     )
 
 
+def _enrolled_subject_payloads(student):
+    """Map student enrolled subject names to Subject rows for the same center."""
+    names = student.get_enrolled_subjects()
+    if not names:
+        return [], []
+
+    catalog = Subject.query.filter_by(institution_id=student.institution_id).all()
+    by_name = {item.name.strip().lower(): item for item in catalog if item.name}
+
+    details = []
+    for name in names:
+        match = by_name.get(name.strip().lower())
+        details.append(
+            {
+                "id": match.id if match else None,
+                "name": name,
+                "code": match.code if match else None,
+                "teacher_id": match.teacher_id if match else None,
+                "teacherId": match.teacher_id if match else None,
+                "teacher_name": match.teacher.full_name if match and match.teacher else None,
+                "teacherName": match.teacher.full_name if match and match.teacher else None,
+            }
+        )
+    return names, details
+
+
 def _student_detail_dict(student, user=None):
     payload = student.to_dict()
+    enrolled_names, enrolled_details = _enrolled_subject_payloads(student)
+    payload["enrolled_subjects"] = enrolled_names
+    payload["enrolledSubjects"] = enrolled_names
+    payload["registered_subjects"] = enrolled_details
+    payload["registeredSubjects"] = enrolled_details
+
+    institution = student.institution or Institution.query.get(student.institution_id)
+    institution_name = institution.name if institution else None
+    payload["institution_id"] = student.institution_id
+    payload["institutionId"] = student.institution_id
+    payload["institution_name"] = institution_name
+    payload["institutionName"] = institution_name
+    payload["tuition_center_name"] = institution_name
+    payload["tuitionCenterName"] = institution_name
+    # No profile photo column yet — keep null so UI can fall back to initials.
+    payload["profile_photo"] = None
+    payload["profilePhoto"] = None
+    payload["photo_url"] = None
+    payload["photoUrl"] = None
+
     classroom = _resolve_student_classroom(student, user=user)
     payload["classroom_id"] = classroom.id if classroom else None
     payload["classroomId"] = classroom.id if classroom else None
@@ -70,6 +116,92 @@ def _student_detail_dict(student, user=None):
     else:
         payload["classroom"] = None
     return payload
+
+
+def _find_student_by_scanned_id(institution_id, scanned_id):
+    """Resolve QR / lookup value to a student in the center."""
+    scanned = (str(scanned_id) if scanned_id is not None else "").strip()
+    if not scanned or not institution_id:
+        return None
+
+    student = Student.query.filter_by(
+        institution_id=institution_id,
+        registration_no=scanned,
+    ).first()
+    if student:
+        return student
+
+    if scanned.isdigit():
+        student = Student.query.filter_by(
+            institution_id=institution_id,
+            id=int(scanned),
+        ).first()
+        if student:
+            return student
+
+    return None
+
+
+def _authorize_student_access(student, user):
+    if not student:
+        return {"errors": ["Student not found"]}, 404
+    if user.role == "super_admin":
+        return None
+    if user.role in ("institution_admin", "teacher"):
+        if student.institution_id != user.institution_id:
+            return {"errors": ["Access denied"]}, 403
+        return None
+    return {"errors": ["Access denied"]}, 403
+
+
+def get_student(student_id, user):
+    """Return one student with enrolled/registered subjects and center details."""
+    if user.role not in ("institution_admin", "teacher", "super_admin"):
+        return {"errors": ["Access denied"]}, 403
+
+    student = Student.query.get(student_id)
+    denied = _authorize_student_access(student, user)
+    if denied:
+        return denied
+
+    return {"student": _student_detail_dict(student, user=user)}, 200
+
+
+def lookup_student(scanned_id, user):
+    """Lookup student by QR registration no / numeric id for checker preview."""
+    if user.role not in ("institution_admin", "teacher", "super_admin"):
+        return {"errors": ["Access denied"]}, 403
+
+    scanned = (str(scanned_id) if scanned_id is not None else "").strip()
+    if not scanned:
+        return {"errors": ["Invalid QR code"], "invalid_qr": True}, 400
+
+    if user.role == "super_admin":
+        student = Student.query.filter_by(registration_no=scanned).first()
+        if not student and scanned.isdigit():
+            student = Student.query.get(int(scanned))
+    else:
+        if not user.institution_id:
+            return {"errors": ["User is not linked to a center"]}, 400
+        student = _find_student_by_scanned_id(user.institution_id, scanned)
+
+    if not student:
+        return {
+            "errors": [f"Invalid QR code. Student not found: {scanned}"],
+            "invalid_qr": True,
+        }, 404
+
+    denied = _authorize_student_access(student, user)
+    if denied:
+        return denied
+
+    payload = _student_detail_dict(student, user=user)
+    return {
+        "success": True,
+        "student": payload,
+        "scanned_id": scanned,
+        "scannedId": scanned,
+    }, 200
 
 
 def _find_duplicate_student(institution_id, full_name, contact):
@@ -457,18 +589,6 @@ def update_student(student_id, data, user):
     except Exception:
         db.session.rollback()
         return {"errors": ["Failed to update student"]}, 500
-
-
-def _authorize_student_access(student, user):
-    if not student:
-        return {"errors": ["Student not found"]}, 404
-    if user.role == "super_admin":
-        return None
-    if user.role in ("institution_admin", "teacher"):
-        if student.institution_id != user.institution_id:
-            return {"errors": ["Access denied"]}, 403
-        return None
-    return {"errors": ["Access denied"]}, 403
 
 
 def list_face_profiles(user):
