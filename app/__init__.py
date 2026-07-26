@@ -14,6 +14,7 @@ from app.routes import (
     sms_log_bp,
     study_log_bp,
     student_bp,
+    subject_bp,
     teacher_bp,
     timetable_bp,
 )
@@ -83,6 +84,7 @@ def create_app(config_class=Config):
     app.register_blueprint(parent_bp)
     app.register_blueprint(teacher_bp)
     app.register_blueprint(timetable_bp)
+    app.register_blueprint(subject_bp)
 
     @app.errorhandler(404)
     def not_found(_error):
