@@ -87,12 +87,15 @@ def scan():
 @jwt_required()
 @role_required("teacher", "institution_admin", "super_admin")
 def today_attendance():
-    """List center attendance for a date (default: today). Optional classroom_id filter."""
+    """List center attendance for a date (default: today). Optional filters."""
     user = get_current_user()
     result, status = get_today_center_attendance(
         user,
         date_str=request.args.get("date"),
         classroom_id=request.args.get("classroom_id"),
+        grade=request.args.get("grade"),
+        subject=request.args.get("subject") or request.args.get("subject_name"),
+        search=request.args.get("search") or request.args.get("q"),
     )
     return result, status
 

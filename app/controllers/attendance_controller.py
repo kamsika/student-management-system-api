@@ -1271,7 +1271,14 @@ def scan_center_attendance(data, user):
     }, http_status
 
 
-def get_center_attendance(user, date_str=None, classroom_id=None):
+def get_center_attendance(
+    user,
+    date_str=None,
+    classroom_id=None,
+    grade=None,
+    subject=None,
+    search=None,
+):
     """List Present/Late attendance for a center on a given date (default: today)."""
     if user.role not in ("teacher", "institution_admin", "super_admin"):
         return {"errors": ["Access denied"]}, 403
@@ -1303,27 +1310,75 @@ def get_center_attendance(user, date_str=None, classroom_id=None):
             classroom = Classroom.query.get(int(classroom_id))
             if not classroom or classroom.institution_id != user.institution_id:
                 return {"errors": ["Classroom not found"]}, 404
-            if user.role == "teacher" and classroom.teacher_id != user.id:
-                return {"errors": ["Access denied"]}, 403
+            # Checker can filter any classroom in the center.
             query = query.filter(Attendance.classroom_id == classroom.id)
-        elif user.role == "teacher":
-            # Teachers only see attendance for classrooms they teach.
-            query = query.filter(Classroom.teacher_id == user.id)
+        # Teachers see all center attendance (no teacher_id classroom lock).
+
+    selected_grade = (grade or "").strip()
+    if selected_grade and selected_grade.lower() not in ("all", "all grades"):
+        grade_digits = "".join(ch for ch in selected_grade if ch.isdigit())
+        if grade_digits:
+            query = query.filter(
+                db.or_(
+                    Student.grade.ilike(f"%{selected_grade}%"),
+                    Student.grade.ilike(f"%{grade_digits}%"),
+                )
+            )
+        else:
+            query = query.filter(Student.grade.ilike(f"%{selected_grade}%"))
+
+    selected_subject = (subject or "").strip()
+    if selected_subject and selected_subject.lower() not in ("all", "all subjects"):
+        query = query.filter(Attendance.subject_name.ilike(selected_subject))
+
+    search_text = (search or "").strip()
+    if search_text:
+        pattern = f"%{search_text.lower()}%"
+        query = query.join(User, Student.user_id == User.id).filter(
+            db.or_(
+                db.func.lower(User.full_name).like(pattern),
+                db.func.lower(Student.registration_no).like(pattern),
+            )
+        )
 
     records = query.order_by(Attendance.arrival_time.desc(), Attendance.id.desc()).all()
+    payloads = []
+    for record in records:
+        payload = record.to_dict()
+        student = record.student
+        payload["grade"] = student.grade if student else None
+        payload["student_grade"] = student.grade if student else None
+        payloads.append(payload)
 
     return {
         "date": attendance_date.isoformat(),
         "institution_id": user.institution_id,
         "classroom_id": int(classroom_id) if classroom_id else None,
-        "count": len(records),
-        "records": [r.to_dict() for r in records],
+        "grade": selected_grade or None,
+        "subject": selected_subject or None,
+        "search": search_text or None,
+        "count": len(payloads),
+        "records": payloads,
     }, 200
 
 
-def get_today_center_attendance(user, date_str=None, classroom_id=None):
+def get_today_center_attendance(
+    user,
+    date_str=None,
+    classroom_id=None,
+    grade=None,
+    subject=None,
+    search=None,
+):
     """Backward-compatible alias for get_center_attendance."""
-    return get_center_attendance(user, date_str=date_str, classroom_id=classroom_id)
+    return get_center_attendance(
+        user,
+        date_str=date_str,
+        classroom_id=classroom_id,
+        grade=grade,
+        subject=subject,
+        search=search,
+    )
 
 
 def get_classroom_attendance(classroom_id, user, date_str=None):

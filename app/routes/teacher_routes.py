@@ -11,11 +11,14 @@ teacher_bp = Blueprint("teacher", __name__, url_prefix="/api/teacher")
 @jwt_required()
 @role_required("teacher")
 def attendance_overview():
-    """Teacher attendance overview for a date (default: today) and optional classroom."""
+    """Teacher attendance overview for a date (default: today) and optional filters."""
     user = get_current_user()
     result, status = get_teacher_attendance_overview(
         user,
         date_str=request.args.get("date"),
         classroom_id=request.args.get("classroomId") or request.args.get("classroom_id"),
+        grade=request.args.get("grade"),
+        subject=request.args.get("subject") or request.args.get("subjectName"),
+        search=request.args.get("search") or request.args.get("q"),
     )
     return result, status
