@@ -315,6 +315,7 @@ def create_attendance(data, user):
         return {"success": False, "errors": ["Access denied"]}, 403
 
     attendance_date = local_today()
+    enrolled_subjects = student.get_enrolled_subjects()
 
     if classroom_id is not None and str(classroom_id).strip() != "":
         try:
@@ -342,6 +343,85 @@ def create_attendance(data, user):
 
     plan = resolve_auto_mark_subjects(student.id, classroom_id=classroom.id)
     subjects = plan.get("subjects") or []
+    eligible_slots = list(plan.get("eligibleSlots") or [])
+
+    # Only auto-mark subjects the student is enrolled in (when configured).
+    if enrolled_subjects:
+        enrolled_keys = {name.lower() for name in enrolled_subjects}
+        subjects = [name for name in subjects if name.lower() in enrolled_keys]
+        eligible_slots = [
+            slot for slot in eligible_slots if slot.subject_name.lower() in enrolled_keys
+        ]
+
+    today_timetable = [
+        {
+            "subjectName": slot.subject_name,
+            "subject_name": slot.subject_name,
+            "startTime": slot.start_time,
+            "start_time": slot.start_time,
+            "endTime": slot.end_time,
+            "end_time": slot.end_time,
+        }
+        for slot in (plan.get("slots") or [])
+    ]
+
+    def _scan_extras(*, auto_marked=None, newly_marked=None, already_marked=None, details=None):
+        return {
+            "studentId": student.id,
+            "student_id": student.id,
+            "studentName": student.user.full_name if student.user else None,
+            "student_name": student.user.full_name if student.user else None,
+            "registrationNo": student.registration_no,
+            "registration_no": student.registration_no,
+            "enrolledSubjects": enrolled_subjects,
+            "enrolled_subjects": enrolled_subjects,
+            "todayTimetable": today_timetable,
+            "today_timetable": today_timetable,
+            "autoMarkedSubjects": auto_marked or [],
+            "newlyMarkedSubjects": newly_marked or [],
+            "alreadyMarkedSubjects": already_marked or [],
+            "autoMarkedDetails": details or [],
+            "auto_marked_details": details or [],
+            "dayOfWeek": plan.get("dayOfWeek"),
+            "currentTime": plan.get("currentTime"),
+        }
+
+    def _build_auto_mark_details(marked_subjects):
+        marked_set = {name.lower() for name in (marked_subjects or [])}
+        details = []
+        for index, slot in enumerate(eligible_slots):
+            if slot.subject_name.lower() not in marked_set:
+                continue
+            continuous = index > 0
+            label = (
+                f"{slot.subject_name} - Present (Continuous Class)"
+                if continuous
+                else f"{slot.subject_name} - Present"
+            )
+            details.append(
+                {
+                    "subjectName": slot.subject_name,
+                    "subject_name": slot.subject_name,
+                    "status": "Present",
+                    "continuousClass": continuous,
+                    "continuous_class": continuous,
+                    "label": label,
+                }
+            )
+        # Fallback when slots list is empty but subject names exist.
+        if not details:
+            for name in marked_subjects or []:
+                details.append(
+                    {
+                        "subjectName": name,
+                        "subject_name": name,
+                        "status": "Present",
+                        "continuousClass": False,
+                        "continuous_class": False,
+                        "label": f"{name} - Present",
+                    }
+                )
+        return details
 
     # No matching timetable class right now → fall back to a general Present mark.
     if not subjects:
@@ -364,9 +444,9 @@ def create_attendance(data, user):
                 "success": True,
                 "status": status,
                 "message": "Already marked today",
-                "autoMarkedSubjects": [],
                 "data": payload,
                 "attendance": payload,
+                **_scan_extras(),
             }, 200
         if result_status >= 400:
             return {"success": False, **result}, result_status
@@ -375,9 +455,9 @@ def create_attendance(data, user):
             "success": True,
             "status": status,
             "message": "Attendance marked successfully",
-            "autoMarkedSubjects": [],
             "data": payload,
             "attendance": payload,
+            **_scan_extras(),
         }, 201
 
     created_records = []
@@ -407,11 +487,13 @@ def create_attendance(data, user):
                 "success": False,
                 **result,
                 "autoMarkedSubjects": newly_marked,
+                "enrolledSubjects": enrolled_subjects,
             }, result_status
         newly_marked.append(subject)
         created_records.append(result.get("attendance"))
 
     auto_marked = newly_marked or already_marked
+    details = _build_auto_mark_details(auto_marked)
     if newly_marked and already_marked:
         message = (
             f"Auto-marked {', '.join(newly_marked)}; "
@@ -430,14 +512,15 @@ def create_attendance(data, user):
         "success": True,
         "status": status,
         "message": message,
-        "autoMarkedSubjects": auto_marked,
-        "newlyMarkedSubjects": newly_marked,
-        "alreadyMarkedSubjects": already_marked,
-        "dayOfWeek": plan.get("dayOfWeek"),
-        "currentTime": plan.get("currentTime"),
         "data": primary,
         "attendance": primary,
         "records": created_records,
+        **_scan_extras(
+            auto_marked=auto_marked,
+            newly_marked=newly_marked,
+            already_marked=already_marked,
+            details=details,
+        ),
     }, http_status
 
 

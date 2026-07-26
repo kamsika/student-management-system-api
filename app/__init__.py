@@ -145,6 +145,7 @@ def _apply_schema_updates(app):
             "section": "VARCHAR(50) NULL",
             "gender": "VARCHAR(20) NULL",
             "face_descriptor": "JSON NULL",
+            "enrolled_subjects": "JSON NULL",
         }
 
         for column_name, column_type in additions.items():

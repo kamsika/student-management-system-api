@@ -1,5 +1,6 @@
 from app.extensions import db
 from app.models import Institution, Student, User
+from app.models.student_model import normalize_enrolled_subjects
 from app.utils.csv_utils import parse_students_csv, generate_students_template_csv
 from app.utils.student_id_utils import build_placeholder_emails, generate_next_registration_no
 
@@ -145,6 +146,11 @@ def create_student(data, user, default_password="Student@123"):
     section = (data.get("section") or "").strip() or None
     gender = (data.get("gender") or "").strip() or None
     contact = (data.get("contact") or data.get("contact_number") or "").strip() or None
+    enrolled_subjects = normalize_enrolled_subjects(
+        data.get("enrolledSubjects")
+        if data.get("enrolledSubjects") is not None
+        else data.get("enrolled_subjects")
+    )
 
     if not full_name:
         return {"errors": ["Name is required"]}, 400
@@ -204,6 +210,7 @@ def create_student(data, user, default_password="Student@123"):
             grade=grade,
             section=section,
             gender=gender,
+            enrolled_subjects=enrolled_subjects,
         )
         db.session.add(student)
         db.session.commit()
@@ -215,6 +222,60 @@ def create_student(data, user, default_password="Student@123"):
     except Exception:
         db.session.rollback()
         return {"errors": ["Failed to create student"]}, 500
+
+
+def update_student(student_id, data, user):
+    """Update student profile fields including enrolledSubjects."""
+    if user.role not in ("institution_admin", "teacher", "super_admin"):
+        return {"errors": ["Access denied"]}, 403
+
+    student = Student.query.get(student_id)
+    denied = _authorize_student_access(student, user)
+    if denied:
+        return denied
+
+    if user.role == "teacher" and student.institution_id != user.institution_id:
+        return {"errors": ["Access denied"]}, 403
+
+    try:
+        if "full_name" in data or "name" in data:
+            full_name = (data.get("full_name") or data.get("name") or "").strip()
+            if not full_name:
+                return {"errors": ["Name is required"]}, 400
+            if student.user:
+                student.user.full_name = full_name
+
+        if "grade" in data:
+            student.grade = (data.get("grade") or "").strip() or None
+        if "section" in data:
+            student.section = (data.get("section") or "").strip() or None
+        if "gender" in data:
+            gender = (data.get("gender") or "").strip() or None
+            if gender and gender not in ("Male", "Female", "Other"):
+                return {"errors": ["Gender must be Male, Female, or Other"]}, 400
+            student.gender = gender
+        if "contact" in data or "contact_number" in data:
+            contact = (data.get("contact") or data.get("contact_number") or "").strip() or None
+            if student.user:
+                student.user.phone_number = contact
+
+        if "enrolledSubjects" in data or "enrolled_subjects" in data:
+            raw = (
+                data.get("enrolledSubjects")
+                if "enrolledSubjects" in data
+                else data.get("enrolled_subjects")
+            )
+            student.enrolled_subjects = normalize_enrolled_subjects(raw)
+
+        db.session.commit()
+        db.session.refresh(student)
+        return {
+            "student": student.to_dict(),
+            "message": "Student updated successfully",
+        }, 200
+    except Exception:
+        db.session.rollback()
+        return {"errors": ["Failed to update student"]}, 500
 
 
 def _authorize_student_access(student, user):

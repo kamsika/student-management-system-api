@@ -10,6 +10,7 @@ from app.controllers.student_controller import (
     list_students,
     list_teachers,
     save_student_face,
+    update_student,
 )
 from app.middleware import get_current_user, role_required
 
@@ -31,6 +32,16 @@ def list_all():
 def create_one():
     user = get_current_user()
     result, status = create_student(request.get_json(silent=True) or {}, user)
+    return result, status
+
+
+@student_bp.patch("/<int:student_id>")
+@student_bp.put("/<int:student_id>")
+@jwt_required()
+@role_required("institution_admin", "teacher", "super_admin")
+def update_one(student_id):
+    user = get_current_user()
+    result, status = update_student(student_id, request.get_json(silent=True) or {}, user)
     return result, status
 
 
