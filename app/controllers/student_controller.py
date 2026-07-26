@@ -2,7 +2,16 @@ from sqlalchemy import func, or_
 import re
 
 from app.extensions import db
-from app.models import Classroom, Institution, Student, StudentPayment, Subject, Timetable, User
+from app.models import (
+    Attendance,
+    Classroom,
+    Institution,
+    Student,
+    StudentPayment,
+    Subject,
+    Timetable,
+    User,
+)
 from app.models.student_model import normalize_enrolled_subjects
 from app.utils.csv_utils import parse_students_csv, generate_students_template_csv
 from app.utils.student_id_utils import build_placeholder_emails, generate_next_registration_no
@@ -78,6 +87,38 @@ def _enrolled_subject_payloads(student):
     return names, details
 
 
+def _already_marked_subjects_today(student):
+    today = local_today()
+    rows = (
+        Attendance.query.filter_by(student_id=student.id, date=today)
+        .filter(Attendance.status.in_(("Present", "Late")))
+        .all()
+    )
+    details = []
+    names = []
+    seen = set()
+    for row in rows:
+        name = (row.subject_name or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+        details.append(
+            {
+                "id": row.subject_id,
+                "subject_id": row.subject_id,
+                "subjectId": row.subject_id,
+                "name": name,
+                "subject_name": name,
+                "subjectName": name,
+            }
+        )
+    return names, details
+
+
 def _student_detail_dict(student, user=None):
     payload = student.to_dict()
     enrolled_names, enrolled_details = _enrolled_subject_payloads(student)
@@ -85,6 +126,12 @@ def _student_detail_dict(student, user=None):
     payload["enrolledSubjects"] = enrolled_names
     payload["registered_subjects"] = enrolled_details
     payload["registeredSubjects"] = enrolled_details
+
+    already_names, already_details = _already_marked_subjects_today(student)
+    payload["already_marked_subjects"] = already_names
+    payload["alreadyMarkedSubjects"] = already_names
+    payload["already_marked_subject_details"] = already_details
+    payload["alreadyMarkedSubjectDetails"] = already_details
 
     institution = student.institution or Institution.query.get(student.institution_id)
     institution_name = institution.name if institution else None

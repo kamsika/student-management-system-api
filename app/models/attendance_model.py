@@ -16,11 +16,14 @@ class Attendance(db.Model):
     )
     # Subject from timetable auto-marking; empty string = general / non-timetable mark.
     subject_name = db.Column(db.String(120), nullable=False, default="", server_default="")
+    # Optional FK to subjects catalog (checker QR / subject-based marking).
+    subject_id = db.Column(db.Integer, db.ForeignKey("subjects.id"), nullable=True, index=True)
     # How the mark was created: manual | qr | face | "" (legacy/unknown).
     marked_via = db.Column(db.String(20), nullable=False, default="", server_default="")
     marked_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
 
     marker = db.relationship("User", foreign_keys=[marked_by])
+    subject = db.relationship("Subject", foreign_keys=[subject_id], lazy=True)
 
     __table_args__ = (
         db.UniqueConstraint(
@@ -35,6 +38,8 @@ class Attendance(db.Model):
     def to_dict(self):
         classroom = self.classroom
         student = self.student
+        subject_row = self.subject
+        subject_name = self.subject_name or (subject_row.name if subject_row else None)
         return {
             "id": self.id,
             "student_id": self.student_id,
@@ -46,11 +51,15 @@ class Attendance(db.Model):
             "date": to_iso(self.date),
             "arrival_time": to_iso(self.arrival_time),
             "status": self.status,
-            "subject_name": self.subject_name or None,
-            "subjectName": self.subject_name or None,
+            "subject_id": self.subject_id,
+            "subjectId": self.subject_id,
+            "subject_name": subject_name or None,
+            "subjectName": subject_name or None,
             "marked_via": self.marked_via or None,
             "markedVia": self.marked_via or None,
             "marked_by": self.marked_by,
+            "checker_id": self.marked_by,
+            "checkerId": self.marked_by,
             "student_name": student.user.full_name if student and student.user else None,
             "registration_no": student.registration_no if student else None,
         }

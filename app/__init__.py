@@ -232,6 +232,31 @@ def _apply_schema_updates(app):
             )
             attendance_cols.add("marked_via")
 
+        if "subject_id" not in attendance_cols:
+            db.session.execute(
+                text(
+                    "ALTER TABLE attendance "
+                    "ADD COLUMN subject_id INT NULL"
+                )
+            )
+            attendance_cols.add("subject_id")
+            try:
+                db.session.execute(
+                    text(
+                        "ALTER TABLE attendance "
+                        "ADD CONSTRAINT fk_attendance_subject "
+                        "FOREIGN KEY (subject_id) REFERENCES subjects(id)"
+                    )
+                )
+            except Exception:
+                pass
+            try:
+                db.session.execute(
+                    text("CREATE INDEX ix_attendance_subject_id ON attendance (subject_id)")
+                )
+            except Exception:
+                pass
+
         # Refresh inspector indexes after possible column add.
         inspector = inspect(db.engine)
         index_names = {index["name"] for index in inspector.get_indexes("attendance")}

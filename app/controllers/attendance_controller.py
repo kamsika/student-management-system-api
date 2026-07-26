@@ -1,7 +1,7 @@
 from datetime import date
 
 from app.extensions import db
-from app.models import Attendance, Classroom, Student, StudentPayment, User
+from app.models import Attendance, Classroom, Student, StudentPayment, Subject, User
 from app.utils import local_today, parse_attendance_date, parse_incoming_timestamp, utc_now
 from app.utils.alert_engine import calculate_attendance_status, process_late_alert
 
@@ -118,6 +118,48 @@ def _resolve_teacher_classroom(user, classroom_id=None):
     return classroom, None, None
 
 
+def _normalize_grade_key(value):
+    text = (str(value) if value is not None else "").strip().lower()
+    if not text:
+        return ""
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if digits:
+        return f"grade-{digits}"
+    return text
+
+
+def _resolve_classroom_for_student(student, institution_id):
+    """Pick a classroom for attendance when the checker does not select a grade."""
+    classrooms = (
+        Classroom.query.filter_by(institution_id=institution_id)
+        .order_by(Classroom.name.asc(), Classroom.id.asc())
+        .all()
+    )
+    if not classrooms:
+        return None
+
+    student_grade_key = _normalize_grade_key(student.grade)
+    if student_grade_key:
+        for classroom in classrooms:
+            if _normalize_grade_key(classroom.grade) == student_grade_key:
+                return classroom
+            if student_grade_key in _normalize_grade_key(classroom.name):
+                return classroom
+
+    return classrooms[0]
+
+
+def _find_existing_subject_attendance(student_id, attendance_date, *, subject_id=None, subject_name=""):
+    """Duplicate check by student + date + subject (independent of classroom)."""
+    query = Attendance.query.filter_by(student_id=student_id, date=attendance_date)
+    if subject_id is not None:
+        by_id = query.filter_by(subject_id=subject_id).first()
+        if by_id:
+            return by_id
+    name = (subject_name or "").strip()
+    return query.filter_by(subject_name=name).first()
+
+
 def _find_student_in_center(institution_id, scanned_id):
     """Resolve a scanned QR value to a student in the given center.
 
@@ -200,6 +242,16 @@ def mark_attendance(data, user):
     status_override = data.get("status")
     prevent_duplicate = bool(data.get("prevent_duplicate"))
     subject_name = (data.get("subject_name") or data.get("subjectName") or "").strip()
+    subject_id_raw = data.get("subject_id")
+    if subject_id_raw is None:
+        subject_id_raw = data.get("subjectId")
+    subject_id = None
+    if subject_id_raw is not None and str(subject_id_raw).strip() != "":
+        try:
+            subject_id = int(subject_id_raw)
+        except (TypeError, ValueError):
+            return {"errors": ["subject_id must be an integer"]}, 400
+
     marked_via = (data.get("marked_via") or data.get("markedVia") or "").strip().lower()
     if marked_via and marked_via not in ("manual", "qr", "face"):
         marked_via = ""
@@ -214,7 +266,7 @@ def mark_attendance(data, user):
     print(
         f"[ATTENDANCE] Received attendance request for ID: {scanned_id!r} "
         f"(raw student_id={raw_student_id!r}, registration_no={registration_no!r}, "
-        f"subject={subject_name!r})"
+        f"subject={subject_name!r}, subject_id={subject_id!r})"
     )
 
     if not classroom_id:
@@ -239,6 +291,22 @@ def mark_attendance(data, user):
     student = _find_student_in_center(classroom.institution_id, scanned_id)
     if not student:
         return {"errors": [f"Student not found for ID: {scanned_id}"]}, 404
+
+    if subject_id is not None:
+        subject_row = Subject.query.get(subject_id)
+        if not subject_row or subject_row.institution_id != classroom.institution_id:
+            return {"errors": ["Subject not found"]}, 404
+        if not subject_name:
+            subject_name = subject_row.name
+        subject_id = subject_row.id
+    elif subject_name:
+        subject_row = (
+            Subject.query.filter_by(institution_id=classroom.institution_id)
+            .filter(db.func.lower(Subject.name) == subject_name.lower())
+            .first()
+        )
+        if subject_row:
+            subject_id = subject_row.id
 
     # Subject-tagged requests must never create attendance for an un-enrolled
     # student. Timetable requests also validate the whole continuous chain
@@ -274,12 +342,19 @@ def mark_attendance(data, user):
         status, delta_minutes = calculate_attendance_status(classroom, arrival_time)
 
     try:
-        record = Attendance.query.filter_by(
-            student_id=student.id,
-            classroom_id=classroom.id,
-            date=attendance_date,
+        record = _find_existing_subject_attendance(
+            student.id,
+            attendance_date,
+            subject_id=subject_id,
             subject_name=subject_name,
-        ).first()
+        )
+        if record is None:
+            record = Attendance.query.filter_by(
+                student_id=student.id,
+                classroom_id=classroom.id,
+                date=attendance_date,
+                subject_name=subject_name,
+            ).first()
 
         if record and prevent_duplicate and record.status in ("Present", "Late"):
             payload = record.to_dict()
@@ -287,7 +362,7 @@ def mark_attendance(data, user):
             print(
                 f"[ATTENDANCE] Duplicate scan blocked student_id={student.id} "
                 f"registration_no={student.registration_no!r} date={attendance_date.isoformat()} "
-                f"subject={subject_name!r}"
+                f"subject={subject_name!r} subject_id={subject_id!r}"
             )
             return {
                 "errors": [f"Already marked for {subject_label}."],
@@ -301,7 +376,10 @@ def mark_attendance(data, user):
             record.status = status
             record.arrival_time = arrival_time if status != "Absent" else None
             record.marked_by = user.id
+            record.classroom_id = classroom.id
             record.subject_name = subject_name
+            if subject_id is not None:
+                record.subject_id = subject_id
             if marked_via:
                 record.marked_via = marked_via
         else:
@@ -312,6 +390,7 @@ def mark_attendance(data, user):
                 arrival_time=arrival_time if status != "Absent" else None,
                 status=status,
                 subject_name=subject_name,
+                subject_id=subject_id,
                 marked_via=marked_via,
                 marked_by=user.id,
             )
@@ -327,7 +406,8 @@ def mark_attendance(data, user):
         print(
             f"[ATTENDANCE] Marked present student_id={student.id} "
             f"registration_no={student.registration_no!r} "
-            f"name={payload.get('student_name')!r} status={status} subject={subject_name!r}"
+            f"name={payload.get('student_name')!r} status={status} "
+            f"subject={subject_name!r} subject_id={subject_id!r}"
         )
         return {"attendance": payload, "delta_minutes": delta_minutes}, 200
     except Exception as exc:
@@ -970,7 +1050,7 @@ def get_manual_attendance_roster(user, classroom_id=None, subject_name=None, dat
 
 
 def scan_center_attendance(data, user):
-    """Mark attendance by QR value for the teacher's own center only."""
+    """Mark attendance by QR value for selected enrolled subjects (checker flow)."""
     if user.role != "teacher":
         return {"errors": ["Only teachers can use the live scanner"]}, 403
 
@@ -987,13 +1067,8 @@ def scan_center_attendance(data, user):
     if not scanned_id:
         return {"errors": ["student_id is required (scanned QR value)"]}, 400
 
-    classroom_id = data.get("classroom_id")
-    if classroom_id is None:
-        classroom_id = data.get("classroomId")
-
-    classroom, error, status = _resolve_teacher_classroom(user, classroom_id)
-    if error:
-        return error, status
+    if not user.institution_id:
+        return {"errors": ["Teacher is not linked to a center"]}, 400
 
     student = _find_student_in_center(user.institution_id, scanned_id)
     if not student:
@@ -1002,95 +1077,198 @@ def scan_center_attendance(data, user):
             "invalid_qr": True,
         }, 404
 
-    # Prefer timetable auto-mark when a class is in progress.
-    result, result_status = create_attendance(
-        {
-            "studentId": student.id,
-            "classroomId": classroom.id,
-            "timestamp": data.get("scanned_at") or data.get("scannedAt"),
-            "status": "Present",
-            "markedVia": "qr",
-            "selected_subjects": data.get("selected_subjects")
-            if data.get("selected_subjects") is not None
-            else data.get("selectedSubjects"),
-        },
-        user,
+    classroom_id = data.get("classroom_id")
+    if classroom_id is None:
+        classroom_id = data.get("classroomId")
+
+    if classroom_id is not None and str(classroom_id).strip() != "":
+        classroom, error, status = _resolve_teacher_classroom(user, classroom_id)
+        if error:
+            return error, status
+    else:
+        classroom = _resolve_classroom_for_student(student, user.institution_id)
+        if not classroom:
+            return {
+                "errors": ["No classroom found. Ask your center admin to create one."],
+            }, 400
+
+    enrolled = student.get_enrolled_subjects()
+    enrolled_keys = {name.strip().lower() for name in enrolled if str(name).strip()}
+
+    catalog = Subject.query.filter_by(institution_id=user.institution_id).all()
+    catalog_by_id = {item.id: item for item in catalog}
+    catalog_by_name = {item.name.strip().lower(): item for item in catalog if item.name}
+
+    selected_ids_raw = (
+        data.get("selected_subject_ids")
+        if data.get("selected_subject_ids") is not None
+        else data.get("selectedSubjectIds")
     )
+    selected_names_raw = (
+        data.get("selected_subjects")
+        if data.get("selected_subjects") is not None
+        else data.get("selectedSubjects")
+    )
+
+    selections = []
+    seen_keys = set()
+
+    if isinstance(selected_ids_raw, list):
+        for raw_id in selected_ids_raw:
+            try:
+                subject_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            subject_row = catalog_by_id.get(subject_id)
+            if not subject_row:
+                return {"errors": [f"Subject not found: {subject_id}"]}, 404
+            name = subject_row.name.strip()
+            key = name.lower()
+            if key not in enrolled_keys:
+                return {
+                    "errors": [f"Student is not enrolled in {name}."],
+                    "not_enrolled": True,
+                }, 403
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            selections.append({"subject_id": subject_row.id, "subject_name": name})
+
+    if isinstance(selected_names_raw, list):
+        for item in selected_names_raw:
+            name = str(item or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key not in enrolled_keys:
+                return {
+                    "errors": [f"Student is not enrolled in {name}."],
+                    "not_enrolled": True,
+                }, 403
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            subject_row = catalog_by_name.get(key)
+            selections.append(
+                {
+                    "subject_id": subject_row.id if subject_row else None,
+                    "subject_name": name,
+                }
+            )
+
+    if not selections:
+        return {
+            "errors": ["Select at least one enrolled subject to mark attendance."],
+            "selection_required": True,
+            "enrolledSubjects": enrolled,
+            "enrolled_subjects": enrolled,
+        }, 400
 
     student_name = student.user.full_name if student.user else None
     registration = student.registration_no
+    newly_marked = []
+    already_marked = []
+    records = []
+    present_details = []
+    already_details = []
 
-    def _with_student(payload):
-        if not isinstance(payload, dict):
-            return payload
-        payload.setdefault("studentId", student.id)
-        payload.setdefault("student_id", student.id)
-        payload.setdefault("studentName", student_name)
-        payload.setdefault("student_name", student_name)
-        payload.setdefault("registrationNo", registration)
-        payload.setdefault("registration_no", registration)
-        payload.setdefault("classroomId", classroom.id)
-        payload.setdefault("classroom_id", classroom.id)
-        payload.setdefault("markedBy", user.id)
-        payload.setdefault("marked_by", user.id)
-        payload.setdefault("checkerId", user.id)
-        payload.setdefault("checker_id", user.id)
-        return payload
-
-    # Checker QR: if no timetable class is active, still mark Present for the classroom.
-    if result_status == 200 and isinstance(result, dict) and result.get("status") == "NoClass":
-        fallback, fallback_status = mark_attendance(
+    for selection in selections:
+        result, result_status = mark_attendance(
             {
                 "student_id": student.id,
                 "classroom_id": classroom.id,
                 "status": "Present",
                 "scanned_at": data.get("scanned_at") or data.get("scannedAt"),
                 "prevent_duplicate": True,
-                "subject_name": "",
+                "subject_name": selection["subject_name"],
+                "subject_id": selection["subject_id"],
                 "marked_via": "qr",
             },
             user,
         )
-        if fallback_status == 409 and fallback.get("already_scanned"):
-            return _with_student(
+        subject_label = selection["subject_name"]
+        if result_status == 409 and result.get("already_scanned"):
+            already_marked.append(subject_label)
+            already_details.append(
                 {
-                    "success": True,
-                    "status": "AlreadyMarked",
-                    "message": f"Already marked for {student_name or registration}.",
-                    "attendance": fallback.get("attendance"),
-                    "data": fallback.get("attendance"),
-                    "newlyMarkedSubjects": [],
-                    "alreadyMarkedSubjects": ["Attendance"],
-                    "markedAttendanceSubjects": ["Attendance"],
-                    "alreadyMarkedDetails": [
-                        {
-                            "label": f"Already marked for {student_name or registration}.",
-                        }
-                    ],
+                    "label": f"Already marked for {subject_label}.",
+                    "subjectName": subject_label,
+                    "subject_name": subject_label,
+                    "subjectId": selection["subject_id"],
+                    "subject_id": selection["subject_id"],
                 }
-            ), 200
-        if fallback_status >= 400:
-            return _with_student(fallback), fallback_status
+            )
+            if result.get("attendance"):
+                records.append(result["attendance"])
+            continue
+        if result_status >= 400:
+            payload = result if isinstance(result, dict) else {"errors": ["Failed to mark attendance"]}
+            payload.setdefault("studentId", student.id)
+            payload.setdefault("student_id", student.id)
+            payload.setdefault("studentName", student_name)
+            payload.setdefault("registrationNo", registration)
+            return payload, result_status
 
-        return _with_student(
+        newly_marked.append(subject_label)
+        present_details.append(
             {
-                "success": True,
-                "status": "Present",
-                "message": "Attendance marked Present",
-                "attendance": fallback.get("attendance"),
-                "data": fallback.get("attendance"),
-                "newlyMarkedSubjects": ["Present"],
-                "markedAttendanceSubjects": ["Present"],
-                "presentNowDetails": [
-                    {
-                        "label": "Present",
-                        "subjectName": "Present",
-                    }
-                ],
+                "label": f"Present · {subject_label}",
+                "subjectName": subject_label,
+                "subject_name": subject_label,
+                "subjectId": selection["subject_id"],
+                "subject_id": selection["subject_id"],
             }
-        ), 201
+        )
+        if result.get("attendance"):
+            records.append(result["attendance"])
 
-    return _with_student(result), result_status
+    if newly_marked and not already_marked:
+        status = "Present"
+        http_status = 201
+        message = f"Attendance marked Present for {', '.join(newly_marked)}"
+    elif newly_marked and already_marked:
+        status = "Present"
+        http_status = 200
+        message = (
+            f"Marked Present for {', '.join(newly_marked)}. "
+            f"Already marked: {', '.join(already_marked)}."
+        )
+    elif already_marked:
+        status = "AlreadyMarked"
+        http_status = 200
+        message = f"Already marked for {', '.join(already_marked)}."
+    else:
+        status = "Present"
+        http_status = 200
+        message = "Attendance processed"
+
+    return {
+        "success": True,
+        "status": status,
+        "message": message,
+        "studentId": student.id,
+        "student_id": student.id,
+        "studentName": student_name,
+        "student_name": student_name,
+        "registrationNo": registration,
+        "registration_no": registration,
+        "classroomId": classroom.id,
+        "classroom_id": classroom.id,
+        "markedBy": user.id,
+        "marked_by": user.id,
+        "checkerId": user.id,
+        "checker_id": user.id,
+        "attendance": records[0] if records else None,
+        "data": records[0] if records else None,
+        "records": records,
+        "newlyMarkedSubjects": newly_marked,
+        "alreadyMarkedSubjects": already_marked,
+        "markedAttendanceSubjects": newly_marked + already_marked,
+        "presentNowDetails": present_details,
+        "alreadyMarkedDetails": already_details,
+        "enrolledSubjects": enrolled,
+        "enrolled_subjects": enrolled,
+    }, http_status
 
 
 def get_center_attendance(user, date_str=None, classroom_id=None):
