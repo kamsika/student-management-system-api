@@ -21,7 +21,8 @@ def list_classrooms(user):
     query = Classroom.query
 
     if user.role == "teacher":
-        query = query.filter_by(teacher_id=user.id, institution_id=user.institution_id)
+        # Checker can scan any classroom/grade in their center.
+        query = query.filter_by(institution_id=user.institution_id)
     elif user.role == "institution_admin":
         query = query.filter_by(institution_id=user.institution_id)
     elif user.role == "super_admin":

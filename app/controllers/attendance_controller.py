@@ -21,7 +21,8 @@ def _authorize_classroom(classroom_id, user, *, allow_super_admin=True):
         return None, {"errors": ["Classroom not found"]}, 404
 
     if user.role == "teacher":
-        if classroom.teacher_id != user.id or classroom.institution_id != user.institution_id:
+        # Checker teachers can mark attendance for any classroom in their center.
+        if classroom.institution_id != user.institution_id:
             return None, {"errors": ["Access denied"]}, 403
     elif user.role == "institution_admin":
         if classroom.institution_id != user.institution_id:
@@ -105,17 +106,15 @@ def _resolve_teacher_classroom(user, classroom_id=None):
             return None, {"errors": ["Classroom not found"]}, 404
         if classroom.institution_id != user.institution_id:
             return None, {"errors": ["Access denied"]}, 403
-        if classroom.teacher_id != user.id:
-            return None, {"errors": ["Access denied"]}, 403
         return classroom, None, None
 
     classroom = (
-        Classroom.query.filter_by(teacher_id=user.id, institution_id=user.institution_id)
+        Classroom.query.filter_by(institution_id=user.institution_id)
         .order_by(Classroom.name)
         .first()
     )
     if not classroom:
-        return None, {"errors": ["No classroom assigned. Ask your center admin to create one."]}, 400
+        return None, {"errors": ["No classroom found. Ask your center admin to create one."]}, 400
     return classroom, None, None
 
 
@@ -226,7 +225,7 @@ def mark_attendance(data, user):
         return {"errors": ["Classroom not found"]}, 404
 
     if user.role == "teacher":
-        if classroom.teacher_id != user.id or classroom.institution_id != user.institution_id:
+        if classroom.institution_id != user.institution_id:
             return {"errors": ["Access denied"]}, 403
     elif user.role == "institution_admin":
         if classroom.institution_id != user.institution_id:
@@ -379,8 +378,6 @@ def create_attendance(data, user):
             return {"success": False, **error}, error_status
     else:
         classroom_query = Classroom.query.filter_by(institution_id=user.institution_id)
-        if user.role == "teacher":
-            classroom_query = classroom_query.filter_by(teacher_id=user.id)
         classrooms = classroom_query.order_by(Classroom.id.asc()).limit(2).all()
         if not classrooms:
             return {"success": False, "errors": ["No classroom is available"]}, 400
@@ -990,20 +987,27 @@ def scan_center_attendance(data, user):
     if not scanned_id:
         return {"errors": ["student_id is required (scanned QR value)"]}, 400
 
-    classroom, error, status = _resolve_teacher_classroom(user, data.get("classroom_id"))
+    classroom_id = data.get("classroom_id")
+    if classroom_id is None:
+        classroom_id = data.get("classroomId")
+
+    classroom, error, status = _resolve_teacher_classroom(user, classroom_id)
     if error:
         return error, status
 
     student = _find_student_in_center(user.institution_id, scanned_id)
     if not student:
-        return {"errors": [f"Student not found in your center: {scanned_id}"]}, 404
+        return {
+            "errors": [f"Invalid QR code. Student not found in your center: {scanned_id}"],
+            "invalid_qr": True,
+        }, 404
 
-    # Reuse kiosk timetable auto-marking for QR scans as well.
-    return create_attendance(
+    # Prefer timetable auto-mark when a class is in progress.
+    result, result_status = create_attendance(
         {
             "studentId": student.id,
             "classroomId": classroom.id,
-            "timestamp": data.get("scanned_at"),
+            "timestamp": data.get("scanned_at") or data.get("scannedAt"),
             "status": "Present",
             "markedVia": "qr",
             "selected_subjects": data.get("selected_subjects")
@@ -1012,6 +1016,81 @@ def scan_center_attendance(data, user):
         },
         user,
     )
+
+    student_name = student.user.full_name if student.user else None
+    registration = student.registration_no
+
+    def _with_student(payload):
+        if not isinstance(payload, dict):
+            return payload
+        payload.setdefault("studentId", student.id)
+        payload.setdefault("student_id", student.id)
+        payload.setdefault("studentName", student_name)
+        payload.setdefault("student_name", student_name)
+        payload.setdefault("registrationNo", registration)
+        payload.setdefault("registration_no", registration)
+        payload.setdefault("classroomId", classroom.id)
+        payload.setdefault("classroom_id", classroom.id)
+        payload.setdefault("markedBy", user.id)
+        payload.setdefault("marked_by", user.id)
+        payload.setdefault("checkerId", user.id)
+        payload.setdefault("checker_id", user.id)
+        return payload
+
+    # Checker QR: if no timetable class is active, still mark Present for the classroom.
+    if result_status == 200 and isinstance(result, dict) and result.get("status") == "NoClass":
+        fallback, fallback_status = mark_attendance(
+            {
+                "student_id": student.id,
+                "classroom_id": classroom.id,
+                "status": "Present",
+                "scanned_at": data.get("scanned_at") or data.get("scannedAt"),
+                "prevent_duplicate": True,
+                "subject_name": "",
+                "marked_via": "qr",
+            },
+            user,
+        )
+        if fallback_status == 409 and fallback.get("already_scanned"):
+            return _with_student(
+                {
+                    "success": True,
+                    "status": "AlreadyMarked",
+                    "message": f"Already marked for {student_name or registration}.",
+                    "attendance": fallback.get("attendance"),
+                    "data": fallback.get("attendance"),
+                    "newlyMarkedSubjects": [],
+                    "alreadyMarkedSubjects": ["Attendance"],
+                    "markedAttendanceSubjects": ["Attendance"],
+                    "alreadyMarkedDetails": [
+                        {
+                            "label": f"Already marked for {student_name or registration}.",
+                        }
+                    ],
+                }
+            ), 200
+        if fallback_status >= 400:
+            return _with_student(fallback), fallback_status
+
+        return _with_student(
+            {
+                "success": True,
+                "status": "Present",
+                "message": "Attendance marked Present",
+                "attendance": fallback.get("attendance"),
+                "data": fallback.get("attendance"),
+                "newlyMarkedSubjects": ["Present"],
+                "markedAttendanceSubjects": ["Present"],
+                "presentNowDetails": [
+                    {
+                        "label": "Present",
+                        "subjectName": "Present",
+                    }
+                ],
+            }
+        ), 201
+
+    return _with_student(result), result_status
 
 
 def get_center_attendance(user, date_str=None, classroom_id=None):
