@@ -1,4 +1,4 @@
-from app.models import Attendance, Classroom, Student, User
+from app.models import Attendance, Classroom, Student, StudentPayment, User
 from app.utils import parse_attendance_date, to_iso
 
 STATUS_INDICATORS = {
@@ -55,6 +55,12 @@ def get_teacher_attendance_overview(user, date_str=None, classroom_id=None):
         .order_by(User.full_name.asc(), Student.registration_no.asc())
         .all()
     )
+    payment_period = attendance_date.strftime("%Y-%m")
+    payments = StudentPayment.query.filter(
+        StudentPayment.student_id.in_([student.id for student in students]),
+        StudentPayment.billing_period == payment_period,
+    ).all() if students else []
+    payment_by_student = {payment.student_id: payment for payment in payments}
 
     attendance_rows = (
         Attendance.query.filter(
@@ -108,6 +114,19 @@ def get_teacher_attendance_overview(user, date_str=None, classroom_id=None):
                 "classroomId": classroom.id if classroom else None,
                 "classroomName": classroom.name if classroom else None,
                 "attendanceId": record.id if record else None,
+                "monthlyPayment": (
+                    payment_by_student[student.id].to_dict()
+                    if student.id in payment_by_student
+                    else {
+                        "billing_period": payment_period,
+                        "payment_status": "Pending",
+                        "amount_due": None,
+                        "paid_at": None,
+                    }
+                ),
+                "monthlyPaymentStatus": payment_by_student[student.id].payment_status
+                if student.id in payment_by_student
+                else "Pending",
             }
         )
 

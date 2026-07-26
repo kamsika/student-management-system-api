@@ -28,14 +28,14 @@ def _ensure_database_exists(app):
 
     import pymysql
 
-    db_name = os.getenv("DB_NAME")
+    db_name = os.getenv("DB_NAME") or os.getenv("MYSQLDATABASE")
     if not db_name:
         return
 
-    user = os.getenv("DB_USER", "root")
-    password = os.getenv("DB_PASSWORD", "")
-    host = os.getenv("DB_HOST", "localhost")
-    port = int(os.getenv("DB_PORT", "3306"))
+    user = os.getenv("DB_USER") or os.getenv("MYSQLUSER", "root")
+    password = os.getenv("DB_PASSWORD") or os.getenv("MYSQLPASSWORD", "")
+    host = os.getenv("DB_HOST") or os.getenv("MYSQLHOST", "localhost")
+    port = int(os.getenv("DB_PORT") or os.getenv("MYSQLPORT", "3306"))
 
     connection = pymysql.connect(
         host=host,

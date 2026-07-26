@@ -1,10 +1,11 @@
 from sqlalchemy import func, or_
 
 from app.extensions import db
-from app.models import Classroom, Institution, Student, Timetable, User
+from app.models import Classroom, Institution, Student, StudentPayment, Timetable, User
 from app.models.student_model import normalize_enrolled_subjects
 from app.utils.csv_utils import parse_students_csv, generate_students_template_csv
 from app.utils.student_id_utils import build_placeholder_emails, generate_next_registration_no
+from app.utils import local_today, utc_now
 
 
 def _normalize_name(name: str) -> str:
@@ -138,6 +139,48 @@ def update_student_subjects(student_id, data, user):
     except Exception:
         db.session.rollback()
         return {"errors": ["Failed to update enrolled subjects"]}, 500
+
+
+def update_student_payment_status(student_id, data, user):
+    """Create or update the student's monthly fee status."""
+    if user.role not in ("institution_admin", "teacher", "super_admin"):
+        return {"errors": ["Access denied"]}, 403
+
+    student = Student.query.get(student_id)
+    denied = _authorize_student_access(student, user)
+    if denied:
+        return denied
+
+    period = str(data.get("billingPeriod") or data.get("billing_period") or local_today().strftime("%Y-%m")).strip()
+    status = str(data.get("paymentStatus") or data.get("payment_status") or "").strip().title()
+    if len(period) != 7 or period[4] != "-":
+        return {"errors": ["billingPeriod must be YYYY-MM"]}, 400
+    if status not in ("Pending", "Paid", "Overdue"):
+        return {"errors": ["paymentStatus must be Pending, Paid, or Overdue"]}, 400
+
+    payment = StudentPayment.query.filter_by(
+        student_id=student.id,
+        billing_period=period,
+    ).first()
+    if payment is None:
+        payment = StudentPayment(
+            student_id=student.id,
+            billing_period=period,
+            payment_status=status,
+            paid_at=utc_now() if status == "Paid" else None,
+        )
+        db.session.add(payment)
+    else:
+        payment.payment_status = status
+        payment.paid_at = utc_now() if status == "Paid" else None
+
+    try:
+        db.session.commit()
+        db.session.refresh(payment)
+        return {"success": True, "payment": payment.to_dict()}, 200
+    except Exception:
+        db.session.rollback()
+        return {"errors": ["Failed to update payment status"]}, 500
 
 
 def import_students(file_content, user, default_password="Student@123"):

@@ -7,15 +7,21 @@ load_dotenv()
 
 
 def build_database_url():
-    explicit_url = os.getenv("DATABASE_URL")
+    # Railway's MySQL service exposes MYSQL_URL. DATABASE_URL remains the
+    # preferred generic option for local development and other providers.
+    explicit_url = (os.getenv("DATABASE_URL") or os.getenv("MYSQL_URL") or "").strip()
     if explicit_url:
+        # SQLAlchemy needs the PyMySQL driver explicitly when Railway returns
+        # a plain mysql:// URL.
+        if explicit_url.startswith("mysql://"):
+            return "mysql+pymysql://" + explicit_url[len("mysql://") :]
         return explicit_url
 
-    user = os.getenv("DB_USER", "root")
-    password = quote_plus(os.getenv("DB_PASSWORD", ""))
-    host = os.getenv("DB_HOST", "localhost")
-    port = os.getenv("DB_PORT", "3306")
-    name = os.getenv("DB_NAME", "student_mgt_sys")
+    user = os.getenv("DB_USER") or os.getenv("MYSQLUSER", "root")
+    password = quote_plus(os.getenv("DB_PASSWORD") or os.getenv("MYSQLPASSWORD", ""))
+    host = os.getenv("DB_HOST") or os.getenv("MYSQLHOST", "localhost")
+    port = os.getenv("DB_PORT") or os.getenv("MYSQLPORT", "3306")
+    name = os.getenv("DB_NAME") or os.getenv("MYSQLDATABASE", "student_mgt_sys")
 
     if password:
         return f"mysql+pymysql://{user}:{password}@{host}:{port}/{name}"

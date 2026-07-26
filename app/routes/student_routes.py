@@ -12,6 +12,7 @@ from app.controllers.student_controller import (
     save_student_face,
     update_student,
     update_student_subjects,
+    update_student_payment_status,
 )
 from app.middleware import get_current_user, role_required
 
@@ -56,6 +57,17 @@ def update_subjects(student_id):
     """Update enrolled subjects for a specific student."""
     user = get_current_user()
     result, status = update_student_subjects(
+        student_id, request.get_json(silent=True) or {}, user
+    )
+    return result, status
+
+
+@student_bp.patch("/<int:student_id>/payment-status")
+@jwt_required()
+@role_required("institution_admin", "teacher", "super_admin")
+def update_payment_status(student_id):
+    user = get_current_user()
+    result, status = update_student_payment_status(
         student_id, request.get_json(silent=True) or {}, user
     )
     return result, status

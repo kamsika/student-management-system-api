@@ -71,11 +71,16 @@ cp .env.example .env
 | `DB_PASSWORD`                    | MySQL password                           | —                          |
 | `DB_HOST`                        | MySQL host                               | `localhost`                |
 | `DB_PORT`                        | MySQL port                               | `3306`                     |
-| `DB_NAME`                        | Database name                            | `uki-skill-swap-web-app`   |
+| `DB_NAME`                        | Database name                            | `student_mgt_sys`         |
+| `DATABASE_URL`                   | Complete SQLAlchemy database URL         | —                          |
+| `MYSQL_URL`                      | Railway MySQL connection URL fallback    | —                          |
 | `JWT_SECRET_KEY`                 | Secret for signing JWT tokens            | —                          |
 | `JWT_ACCESS_TOKEN_EXPIRES_MINUTES` | Token lifetime in minutes              | `1440`                     |
-| `FLASK_DEBUG`                    | Enable Flask debug mode                  | `1`                        |
+| `FLASK_DEBUG`                    | Enable Flask debug mode                  | `false`                    |
 | `CORS_ORIGINS`                   | Comma-separated allowed origins          | `http://localhost:3000`    |
+| `FRONTEND_URL`                   | One frontend origin to allow             | —                          |
+| `CORS_ALLOW_VERCEL`              | Allow Vercel preview origins             | `true`                     |
+| `PORT`                           | HTTP port; Railway supplies this         | `5000`                     |
 
 The database is created automatically on first startup if it does not exist.
 
@@ -99,7 +104,39 @@ Expected response:
 { "status": "ok" }
 ```
 
-### 4. Seed demo data (optional)
+## Deploying the API to Railway
+
+Create a Railway service from this `student-management-system-api` directory.
+Railway will use the `Procfile`, bind to its assigned `PORT`, and expose the
+health check at `/api/health`.
+
+If you add a Railway MySQL service, connect it to the API service. The API
+accepts Railway's `MYSQL_URL` or `MYSQLHOST`/`MYSQLPORT`/`MYSQLDATABASE`/
+`MYSQLUSER`/`MYSQLPASSWORD` variables. You can also set `DATABASE_URL`
+explicitly; it takes precedence over `MYSQL_URL`.
+
+Set these API service variables:
+
+```env
+JWT_SECRET_KEY=<long-random-secret>
+SECRET_KEY=<different-long-random-secret>
+FRONTEND_URL=https://your-vercel-app.vercel.app
+CORS_ORIGINS=https://your-vercel-app.vercel.app
+```
+
+Keep `CORS_ALLOW_VERCEL=true` if Vercel preview deployments must access the
+API. After deployment, copy the Railway public URL into the frontend's
+Vercel variable:
+
+```env
+NEXT_PUBLIC_API_URL=https://your-api.up.railway.app
+```
+
+Verify the connection by opening
+`https://your-api.up.railway.app/api/health` and checking for
+`{ "status": "ok" }`.
+
+## Seed demo data (optional)
 
 Populate the database with a demo institution, users, classrooms, and sample records:
 
@@ -344,6 +381,11 @@ Valid values: `Active`, `Suspended`
 ```
 
 `status` is optional. If omitted, the API calculates `Present`, `Late`, or `Absent` from the classroom schedule.
+
+**QR timetable behavior:** a QR scan marks the student's active timetable class. If the next
+timetable class starts exactly when the active class ends, it is treated as a continuous class
+and is marked by the same scan. A later class with any real break remains separate and can be
+marked by scanning again during its 10-minute pre-start window or while it is in progress.
 
 ### Study Logs (`/api/study-logs`)
 

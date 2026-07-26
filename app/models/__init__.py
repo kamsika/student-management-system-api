@@ -7,6 +7,7 @@ from app.models.study_log_model import StudyLog
 from app.models.sms_log_model import SmsLog
 from app.models.billing_model import BillingRecord
 from app.models.timetable_model import Timetable
+from app.models.student_payment_model import StudentPayment
 
 __all__ = [
     "Institution",
@@ -18,4 +19,5 @@ __all__ = [
     "SmsLog",
     "BillingRecord",
     "Timetable",
+    "StudentPayment",
 ]
