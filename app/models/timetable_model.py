@@ -16,6 +16,7 @@ class Timetable(db.Model):
     )
     classroom_id = db.Column(db.Integer, db.ForeignKey("classrooms.id"), nullable=True, index=True)
     student_id = db.Column(db.Integer, db.ForeignKey("students.id"), nullable=True, index=True)
+    teacher_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
     day_of_week = db.Column(db.String(20), nullable=False, index=True)
     subject_name = db.Column(db.String(120), nullable=False)
     start_time = db.Column(db.String(5), nullable=False)  # HH:MM
@@ -24,6 +25,7 @@ class Timetable(db.Model):
     institution = db.relationship("Institution", backref="timetable_slots", lazy=True)
     classroom = db.relationship("Classroom", backref="timetable_slots", lazy=True)
     student = db.relationship("Student", backref="timetable_slots", lazy=True)
+    teacher = db.relationship("User", backref="timetable_slots", lazy=True, foreign_keys=[teacher_id])
 
     def to_dict(self):
         return {
@@ -34,6 +36,10 @@ class Timetable(db.Model):
             "classroomId": self.classroom_id,
             "student_id": self.student_id,
             "studentId": self.student_id,
+            "teacher_id": self.teacher_id,
+            "teacherId": self.teacher_id,
+            "teacher_name": self.teacher.full_name if self.teacher else None,
+            "teacherName": self.teacher.full_name if self.teacher else None,
             "day_of_week": self.day_of_week,
             "dayOfWeek": self.day_of_week,
             "subject_name": self.subject_name,

@@ -152,6 +152,13 @@ def _apply_schema_updates(app):
             if column_name not in existing:
                 db.session.execute(text(f"ALTER TABLE students ADD COLUMN {column_name} {column_type}"))
 
+    if "classrooms" in table_names:
+        classroom_cols = {column["name"] for column in inspector.get_columns("classrooms")}
+        if "grade" not in classroom_cols:
+            db.session.execute(text("ALTER TABLE classrooms ADD COLUMN grade VARCHAR(50) NULL"))
+        if "subject_teachers" not in classroom_cols:
+            db.session.execute(text("ALTER TABLE classrooms ADD COLUMN subject_teachers JSON NULL"))
+
     # Timetable auto-marking: ensure tenant_id exists on older databases.
     if "timetables" in table_names:
         timetable_cols = {column["name"] for column in inspector.get_columns("timetables")}
@@ -181,6 +188,26 @@ def _apply_schema_updates(app):
                     "FOREIGN KEY (tenant_id) REFERENCES institutions(id)"
                 )
             )
+            timetable_cols.add("tenant_id")
+
+        if "teacher_id" not in timetable_cols:
+            db.session.execute(
+                text(
+                    "ALTER TABLE timetables ADD COLUMN teacher_id INT NULL, "
+                    "ADD INDEX ix_timetables_teacher_id (teacher_id)"
+                )
+            )
+            try:
+                db.session.execute(
+                    text(
+                        "ALTER TABLE timetables "
+                        "ADD CONSTRAINT fk_timetables_teacher "
+                        "FOREIGN KEY (teacher_id) REFERENCES users(id)"
+                    )
+                )
+            except Exception:
+                # Constraint may already exist or engine may not support inline add.
+                pass
 
     # Attendance subject support for timetable auto-marking.
     if "attendance" in table_names:

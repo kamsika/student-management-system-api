@@ -182,6 +182,13 @@ def upsert_timetable(data):
     subject_name = (_pick(data, "subjectName", "subject_name") or "").strip()
     start_raw = _pick(data, "startTime", "start_time")
     end_raw = _pick(data, "endTime", "end_time")
+    teacher_raw = _pick(data, "teacherId", "teacher_id")
+    teacher_id = None
+    if teacher_raw is not None:
+        try:
+            teacher_id = int(teacher_raw)
+        except (TypeError, ValueError):
+            return {"errors": ["teacherId must be an integer"]}, 400
 
     if not day_of_week:
         return {"errors": [f"dayOfWeek must be one of: {', '.join(VALID_DAYS)}"]}, 400
@@ -255,6 +262,7 @@ def upsert_timetable(data):
                 tenant_id=tenant_id,
                 classroom_id=resolved_classroom_id,
                 student_id=resolved_student_id,
+                teacher_id=teacher_id,
                 day_of_week=day_of_week,
                 subject_name=subject_name,
                 start_time=start_time,
@@ -273,6 +281,8 @@ def upsert_timetable(data):
             slot.subject_name = subject_name
             slot.start_time = start_time
             slot.end_time = end_time
+            if teacher_raw is not None:
+                slot.teacher_id = teacher_id
             created = False
 
         db.session.commit()
