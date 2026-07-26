@@ -27,6 +27,7 @@ def list_all():
     result, status = list_students(
         user,
         search=request.args.get("search") or request.args.get("q"),
+        grade=request.args.get("grade"),
     )
     return result, status
 

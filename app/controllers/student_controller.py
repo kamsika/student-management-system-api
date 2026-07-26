@@ -1,4 +1,5 @@
 from sqlalchemy import func, or_
+import re
 
 from app.extensions import db
 from app.models import Classroom, Institution, Student, StudentPayment, Timetable, User
@@ -14,6 +15,13 @@ def _normalize_name(name: str) -> str:
 
 def _normalize_contact(contact: str) -> str:
     return (contact or "").replace(" ", "").strip()
+
+
+def _grade_sort_key(grade: str):
+    match = re.search(r"(\d+)", grade)
+    if match:
+        return (0, int(match.group(1)), grade.lower())
+    return (1, 0, grade.lower())
 
 
 def _resolve_student_classroom(student, user=None):
@@ -55,7 +63,10 @@ def _student_detail_dict(student, user=None):
         payload["classroom"] = {
             "id": classroom.id,
             "name": classroom.name,
+            "grade": classroom.grade,
         }
+        if not payload.get("grade") and classroom.grade:
+            payload["grade"] = classroom.grade
     else:
         payload["classroom"] = None
     return payload
@@ -76,13 +87,26 @@ def _find_duplicate_student(institution_id, full_name, contact):
     return None
 
 
-def list_students(user, search=None):
+def list_students(user, search=None, grade=None):
     if user.role not in ("institution_admin", "teacher", "super_admin"):
         return {"errors": ["Access denied"]}, 403
 
     query = Student.query.join(User, Student.user_id == User.id)
     if user.role != "super_admin":
         query = query.filter(Student.institution_id == user.institution_id)
+
+    # Distinct grades for filter dropdown (institution-scoped, not limited by search/grade).
+    grades_query = db.session.query(Student.grade).filter(Student.grade.isnot(None))
+    if user.role != "super_admin":
+        grades_query = grades_query.filter(Student.institution_id == user.institution_id)
+    available_grades = sorted(
+        {
+            str(value).strip()
+            for (value,) in grades_query.distinct().all()
+            if value and str(value).strip()
+        },
+        key=_grade_sort_key,
+    )
 
     search_text = (search or "").strip()
     if search_text:
@@ -91,14 +115,28 @@ def list_students(user, search=None):
             or_(
                 func.lower(User.full_name).like(pattern),
                 func.lower(Student.registration_no).like(pattern),
+                func.lower(User.email).like(pattern),
             )
         )
 
-    students = query.order_by(User.full_name.asc(), Student.registration_no.asc()).all()
+    grade_filter = (grade or "").strip()
+    if grade_filter and grade_filter.lower() not in ("all", "all grades"):
+        if grade_filter.lower() == "ungraded":
+            query = query.filter(or_(Student.grade.is_(None), Student.grade == ""))
+        else:
+            query = query.filter(func.lower(Student.grade) == grade_filter.lower())
+
+    students = query.order_by(
+        Student.grade.asc(),
+        User.full_name.asc(),
+        Student.registration_no.asc(),
+    ).all()
     return {
         "students": [_student_detail_dict(student, user=user) for student in students],
         "count": len(students),
         "search": search_text or None,
+        "grade": grade_filter or None,
+        "grades": available_grades,
     }, 200
 
 
