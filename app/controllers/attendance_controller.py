@@ -166,6 +166,7 @@ def mark_attendance(data, user):
     classroom_id = data.get("classroom_id")
     status_override = data.get("status")
     prevent_duplicate = bool(data.get("prevent_duplicate"))
+    subject_name = (data.get("subject_name") or data.get("subjectName") or "").strip()
 
     # Support both student_id (exact scanned QR text) and registration_no.
     scanned_id = ""
@@ -176,7 +177,8 @@ def mark_attendance(data, user):
 
     print(
         f"[ATTENDANCE] Received attendance request for ID: {scanned_id!r} "
-        f"(raw student_id={raw_student_id!r}, registration_no={registration_no!r})"
+        f"(raw student_id={raw_student_id!r}, registration_no={registration_no!r}, "
+        f"subject={subject_name!r})"
     )
 
     if not classroom_id:
@@ -232,13 +234,15 @@ def mark_attendance(data, user):
             student_id=student.id,
             classroom_id=classroom.id,
             date=attendance_date,
+            subject_name=subject_name,
         ).first()
 
         if record and prevent_duplicate and record.status in ("Present", "Late"):
             payload = record.to_dict()
             print(
                 f"[ATTENDANCE] Duplicate scan blocked student_id={student.id} "
-                f"registration_no={student.registration_no!r} date={attendance_date.isoformat()}"
+                f"registration_no={student.registration_no!r} date={attendance_date.isoformat()} "
+                f"subject={subject_name!r}"
             )
             return {
                 "errors": ["Already scanned for today!"],
@@ -250,6 +254,7 @@ def mark_attendance(data, user):
             record.status = status
             record.arrival_time = arrival_time if status != "Absent" else None
             record.marked_by = user.id
+            record.subject_name = subject_name
         else:
             record = Attendance(
                 student_id=student.id,
@@ -257,6 +262,7 @@ def mark_attendance(data, user):
                 date=attendance_date,
                 arrival_time=arrival_time if status != "Absent" else None,
                 status=status,
+                subject_name=subject_name,
                 marked_by=user.id,
             )
             db.session.add(record)
@@ -271,7 +277,7 @@ def mark_attendance(data, user):
         print(
             f"[ATTENDANCE] Marked present student_id={student.id} "
             f"registration_no={student.registration_no!r} "
-            f"name={payload.get('student_name')!r} status={status}"
+            f"name={payload.get('student_name')!r} status={status} subject={subject_name!r}"
         )
         return {"attendance": payload, "delta_minutes": delta_minutes}, 200
     except Exception as exc:
@@ -281,7 +287,9 @@ def mark_attendance(data, user):
 
 
 def create_attendance(data, user):
-    """Create a kiosk attendance record, always with Present status."""
+    """Kiosk attendance with timetable auto-marking + gap detection."""
+    from app.utils.timetable_auto_mark import resolve_auto_mark_subjects
+
     student_id = data.get("studentId")
     classroom_id = data.get("classroomId")
     timestamp = data.get("timestamp")
@@ -301,35 +309,6 @@ def create_attendance(data, user):
         return {"success": False, "errors": ["Access denied"]}, 403
 
     attendance_date = local_today()
-    existing = (
-        Attendance.query.filter_by(student_id=student.id, date=attendance_date)
-        .order_by(Attendance.id.asc())
-        .first()
-    )
-    if existing:
-        # This endpoint represents a positive kiosk check-in. Correct any prior
-        # Absent/Late value instead of returning it unchanged.
-        try:
-            if existing.status != status:
-                existing.status = status
-                existing.arrival_time = existing.arrival_time or parse_incoming_timestamp(timestamp)
-                existing.marked_by = user.id
-                db.session.commit()
-                db.session.refresh(existing)
-            payload = existing.to_dict()
-        except Exception as exc:
-            db.session.rollback()
-            print(f"[ATTENDANCE] Failed to correct existing attendance: {exc}")
-            return {"success": False, "errors": ["Failed to update attendance"]}, 500
-
-        return {
-            "success": True,
-            "status": status,
-            "message": "Already marked today",
-            "data": payload,
-            # Backward compatibility for the kiosk client.
-            "attendance": payload,
-        }, 200
 
     if classroom_id is not None and str(classroom_id).strip() != "":
         try:
@@ -355,38 +334,103 @@ def create_attendance(data, user):
             }, 400
         classroom = classrooms[0]
 
-    result, result_status = mark_attendance(
-        {
-            "student_id": student.id,
-            "classroom_id": classroom.id,
-            "status": "Present",
-            "scanned_at": timestamp,
-            "date": attendance_date.isoformat(),
-            "prevent_duplicate": True,
-        },
-        user,
-    )
+    plan = resolve_auto_mark_subjects(student.id, classroom_id=classroom.id)
+    subjects = plan.get("subjects") or []
 
-    if result_status == 409 and result.get("already_scanned"):
-        payload = result.get("attendance")
+    # No matching timetable class right now → fall back to a general Present mark.
+    if not subjects:
+        result, result_status = mark_attendance(
+            {
+                "student_id": student.id,
+                "classroom_id": classroom.id,
+                "status": "Present",
+                "scanned_at": timestamp,
+                "date": attendance_date.isoformat(),
+                "prevent_duplicate": True,
+                "subject_name": "",
+            },
+            user,
+        )
+        if result_status == 409 and result.get("already_scanned"):
+            payload = result.get("attendance")
+            return {
+                "success": True,
+                "status": status,
+                "message": "Already marked today",
+                "autoMarkedSubjects": [],
+                "data": payload,
+                "attendance": payload,
+            }, 200
+        if result_status >= 400:
+            return {"success": False, **result}, result_status
+        payload = result["attendance"]
         return {
             "success": True,
             "status": status,
-            "message": "Already marked today",
+            "message": "Attendance marked successfully",
+            "autoMarkedSubjects": [],
             "data": payload,
             "attendance": payload,
-        }, 200
-    if result_status >= 400:
-        return {"success": False, **result}, result_status
+        }, 201
 
-    payload = result["attendance"]
+    created_records = []
+    already_marked = []
+    newly_marked = []
+
+    for subject in subjects:
+        result, result_status = mark_attendance(
+            {
+                "student_id": student.id,
+                "classroom_id": classroom.id,
+                "status": "Present",
+                "scanned_at": timestamp,
+                "date": attendance_date.isoformat(),
+                "prevent_duplicate": True,
+                "subject_name": subject,
+            },
+            user,
+        )
+        if result_status == 409 and result.get("already_scanned"):
+            already_marked.append(subject)
+            created_records.append(result.get("attendance"))
+            continue
+        if result_status >= 400:
+            return {
+                "success": False,
+                **result,
+                "autoMarkedSubjects": newly_marked,
+            }, result_status
+        newly_marked.append(subject)
+        created_records.append(result.get("attendance"))
+
+    auto_marked = newly_marked or already_marked
+    if newly_marked and already_marked:
+        message = (
+            f"Auto-marked {', '.join(newly_marked)}; "
+            f"already present for {', '.join(already_marked)}"
+        )
+        http_status = 200
+    elif newly_marked:
+        message = f"Auto-marked Present for: {', '.join(newly_marked)}"
+        http_status = 201
+    else:
+        message = f"Already marked today for: {', '.join(already_marked)}"
+        http_status = 200
+
+    primary = created_records[0] if created_records else None
     return {
         "success": True,
         "status": status,
-        "message": "Attendance marked successfully",
-        "data": payload,
-        "attendance": payload,
-    }, 201
+        "message": message,
+        "autoMarkedSubjects": auto_marked,
+        "newlyMarkedSubjects": newly_marked,
+        "alreadyMarkedSubjects": already_marked,
+        "dayOfWeek": plan.get("dayOfWeek"),
+        "currentTime": plan.get("currentTime"),
+        "data": primary,
+        "attendance": primary,
+        "records": created_records,
+    }, http_status
 
 
 def scan_center_attendance(data, user):
@@ -415,15 +459,16 @@ def scan_center_attendance(data, user):
     if not student:
         return {"errors": [f"Student not found in your center: {scanned_id}"]}, 404
 
-    payload = {
-        # Keep the original scanned QR text — do not replace with another student's id.
-        "student_id": scanned_id,
-        "classroom_id": classroom.id,
-        "status": data.get("status") or "Present",
-        "scanned_at": data.get("scanned_at"),
-        "prevent_duplicate": True,
-    }
-    return mark_attendance(payload, user)
+    # Reuse kiosk timetable auto-marking for QR scans as well.
+    return create_attendance(
+        {
+            "studentId": student.id,
+            "classroomId": classroom.id,
+            "timestamp": data.get("scanned_at"),
+            "status": "Present",
+        },
+        user,
+    )
 
 
 def get_center_attendance(user, date_str=None, classroom_id=None):
@@ -506,10 +551,17 @@ def get_classroom_attendance(classroom_id, user, date_str=None):
         .order_by(User.full_name.asc(), Student.registration_no.asc())
         .all()
     )
-    attendance_map = {
-        a.student_id: a
-        for a in Attendance.query.filter_by(classroom_id=classroom_id, date=attendance_date).all()
-    }
+    attendance_rows = Attendance.query.filter_by(classroom_id=classroom_id, date=attendance_date).all()
+    attendance_map = {}
+    for record in attendance_rows:
+        current = attendance_map.get(record.student_id)
+        if current is None:
+            attendance_map[record.student_id] = record
+            continue
+        # Prefer Present/Late over Absent when multiple subject rows exist.
+        rank = {"Present": 3, "Late": 2, "Absent": 1}
+        if rank.get(record.status, 0) > rank.get(current.status, 0):
+            attendance_map[record.student_id] = record
 
     records = []
     present_records = []
