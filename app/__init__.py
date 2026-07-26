@@ -15,6 +15,7 @@ from app.routes import (
     study_log_bp,
     student_bp,
     teacher_bp,
+    timetable_bp,
 )
 from app.utils.alert_engine import run_absentee_sweeper
 
@@ -81,6 +82,7 @@ def create_app(config_class=Config):
     app.register_blueprint(student_bp)
     app.register_blueprint(parent_bp)
     app.register_blueprint(teacher_bp)
+    app.register_blueprint(timetable_bp)
 
     @app.errorhandler(404)
     def not_found(_error):
@@ -148,6 +150,63 @@ def _apply_schema_updates(app):
         for column_name, column_type in additions.items():
             if column_name not in existing:
                 db.session.execute(text(f"ALTER TABLE students ADD COLUMN {column_name} {column_type}"))
+
+    # Timetable auto-marking: ensure tenant_id exists on older databases.
+    if "timetables" in table_names:
+        timetable_cols = {column["name"] for column in inspector.get_columns("timetables")}
+        if "tenant_id" not in timetable_cols:
+            db.session.execute(
+                text(
+                    "ALTER TABLE timetables ADD COLUMN tenant_id INT NULL, "
+                    "ADD INDEX ix_timetables_tenant_id (tenant_id)"
+                )
+            )
+            # Backfill from classroom or student institution when possible.
+            db.session.execute(
+                text(
+                    """
+                    UPDATE timetables t
+                    LEFT JOIN classrooms c ON c.id = t.classroom_id
+                    LEFT JOIN students s ON s.id = t.student_id
+                    SET t.tenant_id = COALESCE(c.institution_id, s.institution_id)
+                    WHERE t.tenant_id IS NULL
+                    """
+                )
+            )
+            db.session.execute(
+                text(
+                    "ALTER TABLE timetables MODIFY COLUMN tenant_id INT NOT NULL, "
+                    "ADD CONSTRAINT fk_timetables_tenant "
+                    "FOREIGN KEY (tenant_id) REFERENCES institutions(id)"
+                )
+            )
+
+    # Attendance subject support for timetable auto-marking.
+    if "attendance" in table_names:
+        attendance_cols = {column["name"] for column in inspector.get_columns("attendance")}
+        if "subject_name" not in attendance_cols:
+            db.session.execute(
+                text(
+                    "ALTER TABLE attendance "
+                    "ADD COLUMN subject_name VARCHAR(120) NOT NULL DEFAULT ''"
+                )
+            )
+
+        # Refresh inspector indexes after possible column add.
+        inspector = inspect(db.engine)
+        index_names = {index["name"] for index in inspector.get_indexes("attendance")}
+        # Also check unique constraints reported as indexes on MySQL.
+        if "uq_student_classroom_date" in index_names:
+            db.session.execute(text("ALTER TABLE attendance DROP INDEX uq_student_classroom_date"))
+            index_names.discard("uq_student_classroom_date")
+        if "uq_student_classroom_date_subject" not in index_names:
+            db.session.execute(
+                text(
+                    "ALTER TABLE attendance "
+                    "ADD UNIQUE KEY uq_student_classroom_date_subject "
+                    "(student_id, classroom_id, date, subject_name)"
+                )
+            )
 
     db.session.commit()
 
