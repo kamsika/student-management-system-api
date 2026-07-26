@@ -14,12 +14,20 @@ class Attendance(db.Model):
         db.Enum("Present", "Absent", "Late", name="attendance_status"),
         nullable=False,
     )
+    # Subject from timetable auto-marking; empty string = general / non-timetable mark.
+    subject_name = db.Column(db.String(120), nullable=False, default="", server_default="")
     marked_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
 
     marker = db.relationship("User", foreign_keys=[marked_by])
 
     __table_args__ = (
-        db.UniqueConstraint("student_id", "classroom_id", "date", name="uq_student_classroom_date"),
+        db.UniqueConstraint(
+            "student_id",
+            "classroom_id",
+            "date",
+            "subject_name",
+            name="uq_student_classroom_date_subject",
+        ),
     )
 
     def to_dict(self):
@@ -36,6 +44,8 @@ class Attendance(db.Model):
             "date": to_iso(self.date),
             "arrival_time": to_iso(self.arrival_time),
             "status": self.status,
+            "subject_name": self.subject_name or None,
+            "subjectName": self.subject_name or None,
             "marked_by": self.marked_by,
             "student_name": student.user.full_name if student and student.user else None,
             "registration_no": student.registration_no if student else None,
