@@ -365,7 +365,7 @@ def mark_attendance(data, user):
                 f"subject={subject_name!r} subject_id={subject_id!r}"
             )
             return {
-                "errors": [f"Already marked for {subject_label}."],
+                "errors": [f"Attendance already marked for this subject today."],
                 "already_scanned": True,
                 "alreadyMarkedFor": subject_label,
                 "already_marked_for": subject_label,
@@ -1191,7 +1191,7 @@ def scan_center_attendance(data, user):
             already_marked.append(subject_label)
             already_details.append(
                 {
-                    "label": f"Already marked for {subject_label}.",
+                    "label": f"Attendance already marked for this subject today.",
                     "subjectName": subject_label,
                     "subject_name": subject_label,
                     "subjectId": selection["subject_id"],
@@ -1231,12 +1231,12 @@ def scan_center_attendance(data, user):
         http_status = 200
         message = (
             f"Marked Present for {', '.join(newly_marked)}. "
-            f"Already marked: {', '.join(already_marked)}."
+            f"Attendance already marked for this subject today: {', '.join(already_marked)}."
         )
     elif already_marked:
         status = "AlreadyMarked"
         http_status = 200
-        message = f"Already marked for {', '.join(already_marked)}."
+        message = "Attendance already marked for this subject today."
     else:
         status = "Present"
         http_status = 200

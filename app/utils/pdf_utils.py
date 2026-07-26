@@ -1,4 +1,4 @@
-import io
+﻿import io
 import uuid
 from datetime import datetime
 from typing import List, Dict
@@ -35,32 +35,40 @@ def generate_attendance_pdf(
 
     table_data = [["Date", "Student Id", "Registration", "Name", "Timestamp", "Status"]]
     for record in records:
-        table_data.append([
-            record.get("date", ""),
-            str(record.get("student_id", "")),
-            record.get("registration_no", ""),
-            record.get("student_name", ""),
-            record.get("arrival_time", "") or "-",
-            record.get("status", ""),
-        ])
+        table_data.append(
+            [
+                record.get("date", ""),
+                str(record.get("student_id", "")),
+                record.get("registration_no", ""),
+                record.get("student_name", ""),
+                record.get("arrival_time", "") or "-",
+                record.get("status", ""),
+            ]
+        )
 
     table = Table(table_data, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("PADDING", (0, 0), (-1, -1), 6),
-    ]))
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                ("PADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
     elements.append(table)
     elements.append(Spacer(1, 20))
 
     verification_code = str(uuid.uuid4())[:8].upper()
-    elements.append(Paragraph(
-        f"Generated: {datetime.utcnow().isoformat()} UTC | Verification Code: {verification_code}",
-        styles["Normal"],
-    ))
+    elements.append(
+        Paragraph(
+            f"Generated: {datetime.utcnow().isoformat()} UTC | Verification Code: {verification_code}",
+            styles["Normal"],
+        )
+    )
 
     doc.build(elements)
     buffer.seek(0)
@@ -96,32 +104,120 @@ def generate_attendance_summary_pdf(
 
     table_data = [["Student Name", "ID", "Total Present", "Total Absent", "Percentage"]]
     for row in rows:
-        table_data.append([
-            row.get("student_name", "") or "",
-            str(row.get("registration_no", "") or row.get("student_id", "")),
-            str(row.get("total_present", 0)),
-            str(row.get("total_absent", 0)),
-            f"{row.get('percentage', 0)}%",
-        ])
+        table_data.append(
+            [
+                row.get("student_name", "") or "",
+                str(row.get("registration_no", "") or row.get("student_id", "")),
+                str(row.get("total_present", 0)),
+                str(row.get("total_absent", 0)),
+                f"{row.get('percentage', 0)}%",
+            ]
+        )
 
-    table = Table(table_data, repeatRows=1, colWidths=[55 * mm, 35 * mm, 30 * mm, 30 * mm, 28 * mm])
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("PADDING", (0, 0), (-1, -1), 6),
-    ]))
+    table = Table(
+        table_data,
+        repeatRows=1,
+        colWidths=[55 * mm, 35 * mm, 30 * mm, 30 * mm, 28 * mm],
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                ("PADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
     elements.append(table)
     elements.append(Spacer(1, 20))
 
     verification_code = str(uuid.uuid4())[:8].upper()
-    elements.append(Paragraph(
-        f"Generated: {datetime.utcnow().isoformat()} UTC | Verification Code: {verification_code}",
-        styles["Normal"],
-    ))
+    elements.append(
+        Paragraph(
+            f"Generated: {datetime.utcnow().isoformat()} UTC | Verification Code: {verification_code}",
+            styles["Normal"],
+        )
+    )
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.read()
+
+
+def generate_teacher_attendance_history_pdf(
+    institution_name: str,
+    date_label: str,
+    grade_label: str,
+    subject_label: str,
+    records: List[Dict],
+) -> bytes:
+    """PDF export for checker attendance history (filtered rows)."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=12 * mm,
+        rightMargin=12 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
+    )
+    styles = getSampleStyleSheet()
+    elements = []
+
+    elements.append(Paragraph(f"<b>{institution_name}</b>", styles["Title"]))
+    elements.append(Paragraph("Attendance History Export", styles["Heading2"]))
+    elements.append(Paragraph(f"Date: {date_label}", styles["Normal"]))
+    elements.append(Paragraph(f"Grade: {grade_label}", styles["Normal"]))
+    elements.append(Paragraph(f"Subject: {subject_label}", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    table_data = [
+        ["Student Name", "Student ID", "Grade", "Subject", "Date", "Time", "Status"]
+    ]
+    for row in records:
+        table_data.append(
+            [
+                row.get("student_name", "") or "",
+                row.get("registration_no", "") or "",
+                row.get("grade", "") or "",
+                row.get("subject_name", "") or "",
+                row.get("date", "") or "",
+                (row.get("arrival_time", "") or "-")[:19],
+                row.get("status", "") or "",
+            ]
+        )
+
+    table = Table(
+        table_data,
+        repeatRows=1,
+        colWidths=[32 * mm, 28 * mm, 20 * mm, 28 * mm, 24 * mm, 28 * mm, 20 * mm],
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#05082E")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fbfe")]),
+                ("PADDING", (0, 0), (-1, -1), 5),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    elements.append(table)
+    elements.append(Spacer(1, 16))
+    verification_code = str(uuid.uuid4())[:8].upper()
+    elements.append(
+        Paragraph(
+            f"Generated: {datetime.utcnow().isoformat()} UTC | Code: {verification_code}",
+            styles["Normal"],
+        )
+    )
 
     doc.build(elements)
     buffer.seek(0)

@@ -1,5 +1,11 @@
-from app.models import Attendance, Classroom, Student, StudentPayment, User
+from calendar import monthrange
+from collections import defaultdict
+from datetime import timedelta
+
+from app.models import Attendance, Classroom, Institution, Student, StudentPayment, Subject, User
 from app.utils import parse_attendance_date, to_iso
+from app.utils.csv_utils import export_teacher_attendance_history_csv
+from app.utils.pdf_utils import generate_teacher_attendance_history_pdf
 
 STATUS_INDICATORS = {
     "Present": "🟢",
@@ -35,6 +41,152 @@ def _display_grade(student_grade):
     if digits and _normalize_grade_key(text).startswith("grade-"):
         return f"Grade {digits}"
     return text
+
+
+def _subject_catalog_names(institution_id):
+    names = []
+    seen = set()
+    for subject in (
+        Subject.query.filter_by(institution_id=institution_id).order_by(Subject.name.asc()).all()
+    ):
+        name = (subject.name or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def _build_attendance_analytics(institution_id, attendance_date, students, attendance_rows):
+    """Grade/subject percentages for the selected day + monthly present trend."""
+    student_ids_set = {student.id for student in students}
+    students_by_id = {student.id: student for student in students}
+    students_by_grade = defaultdict(list)
+    for student in students:
+        grade_label = _display_grade(student.grade) or "Ungraded"
+        students_by_grade[grade_label].append(student.id)
+
+    present_by_student = set()
+    present_by_grade = defaultdict(set)
+    present_by_subject = defaultdict(set)
+    for row in attendance_rows:
+        if row.student_id not in student_ids_set:
+            continue
+        if row.status not in ("Present", "Late"):
+            continue
+        present_by_student.add(row.student_id)
+        student = students_by_id.get(row.student_id)
+        grade_label = _display_grade(student.grade) if student else "Ungraded"
+        present_by_grade[grade_label or "Ungraded"].add(row.student_id)
+        subject_name = (row.subject_name or "").strip() or "General"
+        present_by_subject[subject_name].add(row.student_id)
+
+    grade_wise = []
+    for grade_label, student_ids in sorted(
+        students_by_grade.items(),
+        key=lambda item: (
+            int("".join(ch for ch in item[0] if ch.isdigit()) or 999),
+            item[0].lower(),
+        ),
+    ):
+        total = len(student_ids)
+        present = len(present_by_grade.get(grade_label, set()) & set(student_ids))
+        percentage = round((present / total) * 100, 1) if total else 0.0
+        grade_wise.append(
+            {
+                "grade": grade_label,
+                "totalStudents": total,
+                "presentCount": present,
+                "percentage": percentage,
+            }
+        )
+
+    # Subject-wise: use students enrolled in each subject when available.
+    enrolled_by_subject = defaultdict(set)
+    for student in students:
+        for subject_name in student.get_enrolled_subjects():
+            enrolled_by_subject[subject_name.strip()].add(student.id)
+
+    subject_keys = sorted(
+        set(enrolled_by_subject.keys()) | set(present_by_subject.keys()),
+        key=lambda value: value.lower(),
+    )
+    subject_wise = []
+    for subject_name in subject_keys:
+        enrolled_ids = enrolled_by_subject.get(subject_name) or {
+            student.id for student in students
+        }
+        total = len(enrolled_ids)
+        present = len(present_by_subject.get(subject_name, set()) & enrolled_ids)
+        percentage = round((present / total) * 100, 1) if total else 0.0
+        subject_wise.append(
+            {
+                "subject": subject_name,
+                "totalStudents": total,
+                "presentCount": present,
+                "percentage": percentage,
+            }
+        )
+
+    month_start = attendance_date.replace(day=1)
+    _, days_in_month = monthrange(attendance_date.year, attendance_date.month)
+    month_end = attendance_date.replace(day=days_in_month)
+    monthly_rows = (
+        Attendance.query.join(Student, Attendance.student_id == Student.id)
+        .filter(
+            Student.institution_id == institution_id,
+            Attendance.date >= month_start,
+            Attendance.date <= month_end,
+            Attendance.status.in_(("Present", "Late")),
+        )
+        .all()
+    )
+    present_by_day = defaultdict(set)
+    for row in monthly_rows:
+        present_by_day[row.date.isoformat()].add(row.student_id)
+
+    monthly = []
+    cursor = month_start
+    while cursor <= month_end:
+        key = cursor.isoformat()
+        monthly.append(
+            {
+                "date": key,
+                "label": cursor.strftime("%d %b"),
+                "presentCount": len(present_by_day.get(key, set())),
+                "recordCount": sum(
+                    1 for row in monthly_rows if row.date == cursor
+                ),
+            }
+        )
+        cursor += timedelta(days=1)
+
+    grades_attended = sorted(
+        {
+            _display_grade(student.grade) or "Ungraded"
+            for student in students
+            if student.id in present_by_student
+        },
+        key=lambda value: (
+            int("".join(ch for ch in value if ch.isdigit()) or 999),
+            value.lower(),
+        ),
+    )
+
+    return {
+        "gradeWise": grade_wise,
+        "grade_wise": grade_wise,
+        "subjectWise": subject_wise,
+        "subject_wise": subject_wise,
+        "monthly": monthly,
+        "gradesAttended": grades_attended,
+        "grades_attended": grades_attended,
+        "gradesAttendedCount": len(grades_attended),
+        "grades_attended_count": len(grades_attended),
+    }
 
 
 def get_teacher_attendance_overview(
@@ -145,13 +297,15 @@ def get_teacher_attendance_overview(
         Attendance.id.desc(),
     ).all()
 
-    # Subject catalog from records on this date (center-wide for filter dropdown).
+    # Subject filter options: center catalog + subjects marked today.
+    catalog_subjects = _subject_catalog_names(user.institution_id)
+    marked_subjects = {
+        (row.subject_name or "").strip()
+        for row in attendance_rows
+        if (row.subject_name or "").strip()
+    }
     subject_options = sorted(
-        {
-            (row.subject_name or "").strip()
-            for row in attendance_rows
-            if (row.subject_name or "").strip()
-        },
+        set(catalog_subjects) | marked_subjects,
         key=lambda value: value.lower(),
     )
 
@@ -307,6 +461,15 @@ def get_teacher_attendance_overview(
         1 for item in history_records if item["status"] in ("Present", "Late")
     )
 
+    # Analytics uses the unfiltered center roster for the selected date (still grade/search scoped).
+    analytics = _build_attendance_analytics(
+        user.institution_id,
+        attendance_date,
+        students,
+        attendance_rows,
+    )
+    grades_attended_count = analytics.get("gradesAttendedCount", 0)
+
     return {
         "date": attendance_date.isoformat(),
         "classroomId": resolved_classroom_id,
@@ -323,8 +486,76 @@ def get_teacher_attendance_overview(
             "absentCount": absent_count,
             "lateCount": late_count,
             "totalRecords": marked_record_count,
+            "gradesAttended": grades_attended_count,
+            "grades_attended": grades_attended_count,
             "selectedGrade": selected_grade if selected_grade else "All",
         },
+        "analytics": analytics,
         "students": student_list,
         "records": history_records,
+    }, 200
+
+
+def export_teacher_attendance_history(
+    user,
+    *,
+    date_str=None,
+    classroom_id=None,
+    grade=None,
+    subject=None,
+    search=None,
+    export_format="csv",
+):
+    """Export filtered attendance history rows as CSV or PDF."""
+    result, status = get_teacher_attendance_overview(
+        user,
+        date_str=date_str,
+        classroom_id=classroom_id,
+        grade=grade,
+        subject=subject,
+        search=search,
+    )
+    if status != 200:
+        return result, status
+
+    records = result.get("records") or []
+    export_rows = []
+    for item in records:
+        export_rows.append(
+            {
+                "student_name": item.get("fullName") or "",
+                "registration_no": item.get("registrationNo") or "",
+                "grade": item.get("grade") or "",
+                "subject_name": item.get("subjectName") or item.get("subject_name") or "",
+                "date": item.get("date") or result.get("date") or "",
+                "arrival_time": item.get("timestamp") or "",
+                "status": item.get("status") or "",
+            }
+        )
+
+    institution = Institution.query.get(user.institution_id) if user.institution_id else None
+    institution_name = institution.name if institution else "Tuition Center"
+    selected_grade = result.get("selectedGrade") or "All"
+    selected_subject = result.get("selectedSubject") or "All"
+    date_label = result.get("date") or ""
+
+    if export_format == "pdf":
+        pdf_bytes = generate_teacher_attendance_history_pdf(
+            institution_name=institution_name,
+            date_label=date_label,
+            grade_label=selected_grade,
+            subject_label=selected_subject,
+            records=export_rows,
+        )
+        return {
+            "filename": f"attendance_history_{date_label}.pdf",
+            "mimetype": "application/pdf",
+            "content": pdf_bytes,
+        }, 200
+
+    csv_text = export_teacher_attendance_history_csv(export_rows)
+    return {
+        "filename": f"attendance_history_{date_label}.csv",
+        "mimetype": "text/csv",
+        "content": csv_text.encode("utf-8-sig"),
     }, 200

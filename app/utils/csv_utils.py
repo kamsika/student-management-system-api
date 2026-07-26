@@ -94,3 +94,33 @@ def export_attendance_summary_csv(rows: List[Dict]) -> str:
             row.get("percentage", 0),
         ])
     return output.getvalue()
+
+
+def export_teacher_attendance_history_csv(rows: List[Dict]) -> str:
+    """CSV/Excel export for checker attendance history filters."""
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "Student Name",
+            "Student ID",
+            "Grade",
+            "Subject",
+            "Attendance Date",
+            "Attendance Time",
+            "Status",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                row.get("student_name", "") or "",
+                row.get("registration_no", "") or "",
+                row.get("grade", "") or "",
+                row.get("subject_name", "") or "",
+                row.get("date", "") or "",
+                row.get("arrival_time", "") or "",
+                row.get("status", "") or "",
+            ]
+        )
+    return output.getvalue()
