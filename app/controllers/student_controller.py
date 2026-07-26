@@ -1,5 +1,7 @@
+from sqlalchemy import func, or_
+
 from app.extensions import db
-from app.models import Institution, Student, User
+from app.models import Classroom, Institution, Student, Timetable, User
 from app.models.student_model import normalize_enrolled_subjects
 from app.utils.csv_utils import parse_students_csv, generate_students_template_csv
 from app.utils.student_id_utils import build_placeholder_emails, generate_next_registration_no
@@ -11,6 +13,51 @@ def _normalize_name(name: str) -> str:
 
 def _normalize_contact(contact: str) -> str:
     return (contact or "").replace(" ", "").strip()
+
+
+def _resolve_student_classroom(student, user=None):
+    """Best-effort classroom for display (teacher class, timetable, or center default)."""
+    if user is not None and user.role == "teacher" and user.institution_id:
+        classroom = (
+            Classroom.query.filter_by(teacher_id=user.id, institution_id=user.institution_id)
+            .order_by(Classroom.name.asc())
+            .first()
+        )
+        if classroom:
+            return classroom
+
+    slot = (
+        Timetable.query.filter(Timetable.student_id == student.id, Timetable.classroom_id.isnot(None))
+        .order_by(Timetable.id.desc())
+        .first()
+    )
+    if slot and slot.classroom_id:
+        classroom = Classroom.query.get(slot.classroom_id)
+        if classroom:
+            return classroom
+
+    return (
+        Classroom.query.filter_by(institution_id=student.institution_id)
+        .order_by(Classroom.name.asc())
+        .first()
+    )
+
+
+def _student_detail_dict(student, user=None):
+    payload = student.to_dict()
+    classroom = _resolve_student_classroom(student, user=user)
+    payload["classroom_id"] = classroom.id if classroom else None
+    payload["classroomId"] = classroom.id if classroom else None
+    payload["classroom_name"] = classroom.name if classroom else None
+    payload["classroomName"] = classroom.name if classroom else None
+    if classroom:
+        payload["classroom"] = {
+            "id": classroom.id,
+            "name": classroom.name,
+        }
+    else:
+        payload["classroom"] = None
+    return payload
 
 
 def _find_duplicate_student(institution_id, full_name, contact):
@@ -28,16 +75,69 @@ def _find_duplicate_student(institution_id, full_name, contact):
     return None
 
 
-def list_students(user):
+def list_students(user, search=None):
     if user.role not in ("institution_admin", "teacher", "super_admin"):
         return {"errors": ["Access denied"]}, 403
 
-    query = Student.query
+    query = Student.query.join(User, Student.user_id == User.id)
     if user.role != "super_admin":
-        query = query.filter_by(institution_id=user.institution_id)
+        query = query.filter(Student.institution_id == user.institution_id)
 
-    students = query.all()
-    return {"students": [s.to_dict() for s in students]}, 200
+    search_text = (search or "").strip()
+    if search_text:
+        pattern = f"%{search_text.lower()}%"
+        query = query.filter(
+            or_(
+                func.lower(User.full_name).like(pattern),
+                func.lower(Student.registration_no).like(pattern),
+            )
+        )
+
+    students = query.order_by(User.full_name.asc(), Student.registration_no.asc()).all()
+    return {
+        "students": [_student_detail_dict(student, user=user) for student in students],
+        "count": len(students),
+        "search": search_text or None,
+    }, 200
+
+
+def update_student_subjects(student_id, data, user):
+    """Replace enrolled subjects for a student (teachers/admins)."""
+    if user.role not in ("institution_admin", "teacher", "super_admin"):
+        return {"errors": ["Access denied"]}, 403
+
+    student = Student.query.get(student_id)
+    denied = _authorize_student_access(student, user)
+    if denied:
+        return denied
+
+    raw = (
+        data.get("enrolledSubjects")
+        if data.get("enrolledSubjects") is not None
+        else data.get("enrolled_subjects")
+        if data.get("enrolled_subjects") is not None
+        else data.get("subjects")
+    )
+    if raw is None:
+        return {"errors": ["enrolledSubjects is required"]}, 400
+
+    subjects = normalize_enrolled_subjects(raw)
+
+    try:
+        student.enrolled_subjects = subjects
+        db.session.commit()
+        db.session.refresh(student)
+        payload = _student_detail_dict(student, user=user)
+        return {
+            "success": True,
+            "student": payload,
+            "enrolledSubjects": subjects,
+            "enrolled_subjects": subjects,
+            "message": "Enrolled subjects updated successfully",
+        }, 200
+    except Exception:
+        db.session.rollback()
+        return {"errors": ["Failed to update enrolled subjects"]}, 500
 
 
 def import_students(file_content, user, default_password="Student@123"):
