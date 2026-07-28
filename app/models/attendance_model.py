@@ -33,7 +33,7 @@ class Attendance(db.Model):
         if value == "manual":
             return "Manual"
         if value == "face":
-            return "Face"
+            return "Face Recognition"
         return None
 
     __table_args__ = (

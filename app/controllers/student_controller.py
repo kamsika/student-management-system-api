@@ -694,14 +694,18 @@ def list_face_profiles(user):
     students = query.order_by(Student.id.asc()).all()
     profiles = []
     for student in students:
-        payload = student.to_dict(include_face_descriptor=True)
+        from app.models import FaceData
+
+        row = FaceData.query.filter_by(student_id=student.id).first()
+        embedding = row.face_embedding if row else student.face_descriptor
+        payload = student.to_dict(include_face_descriptor=False)
         profiles.append(
             {
                 "id": payload["id"],
                 "registration_no": payload["registration_no"],
                 "full_name": payload["full_name"],
-                "descriptor": payload.get("descriptor"),
-                "has_face_descriptor": payload["has_face_descriptor"],
+                "descriptor": embedding,
+                "has_face_descriptor": bool(embedding),
             }
         )
     return {"profiles": profiles}, 200
@@ -729,7 +733,9 @@ def save_student_face(student_id, data, user):
         return {"errors": ["descriptor values must be numbers"]}, 400
 
     try:
-        student.face_descriptor = floats
+        from app.controllers.face_controller import upsert_student_face_embedding
+
+        upsert_student_face_embedding(student, floats)
         db.session.commit()
         db.session.refresh(student)
         return {

@@ -9,6 +9,7 @@ from app.routes import (
     attendance_bp,
     auth_bp,
     classroom_bp,
+    face_bp,
     institution_bp,
     parent_bp,
     payment_bp,
@@ -77,6 +78,7 @@ def create_app(config_class=Config):
     )
 
     app.register_blueprint(auth_bp)
+    app.register_blueprint(face_bp)
     app.register_blueprint(institution_bp)
     app.register_blueprint(classroom_bp)
     app.register_blueprint(attendance_bp)
@@ -105,6 +107,7 @@ def create_app(config_class=Config):
     with app.app_context():
         _ensure_database_exists(app)
         db.create_all()
+        _migrate_legacy_face_descriptors()
         _apply_schema_updates(app)
         _seed_super_admin(app)
         _seed_demo_data(app)
@@ -129,6 +132,33 @@ def _scheduled_sweeper(app):
             run_absentee_sweeper()
         except Exception:
             db.session.rollback()
+
+
+def _migrate_legacy_face_descriptors():
+    """Copy students.face_descriptor into face_data when missing (one row per student)."""
+    from app.models import FaceData, Student
+    from app.utils import utc_now
+
+    try:
+        rows = Student.query.filter(Student.face_descriptor.isnot(None)).all()
+        for student in rows:
+            if not student.face_descriptor:
+                continue
+            existing = FaceData.query.filter_by(student_id=student.id).first()
+            if existing:
+                continue
+            now = utc_now()
+            db.session.add(
+                FaceData(
+                    student_id=student.id,
+                    face_embedding=student.face_descriptor,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
 
 
 def _apply_schema_updates(app):

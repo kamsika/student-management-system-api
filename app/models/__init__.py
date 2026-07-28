@@ -9,6 +9,7 @@ from app.models.billing_model import BillingRecord
 from app.models.timetable_model import Timetable
 from app.models.student_payment_model import StudentPayment
 from app.models.subject_model import Subject
+from app.models.face_data_model import FaceData
 
 __all__ = [
     "Institution",
@@ -22,4 +23,5 @@ __all__ = [
     "Timetable",
     "StudentPayment",
     "Subject",
+    "FaceData",
 ]
