@@ -41,7 +41,9 @@ class Config:
     # https://*.vercel.app via regex unless CORS_ALLOW_VERCEL=false.
     _default_cors_origins = [
         "http://localhost:3000",
+        "http://localhost:3001",
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
         "https://student-tracking-sys.vercel.app",
         "https://client-aj4y25kce-kamsikas-projects.vercel.app",
     ]
@@ -70,7 +72,7 @@ class Config:
 
     CORS_ORIGINS = _cors_origins
     CORS_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-    CORS_ALLOW_HEADERS = ["Content-Type", "Authorization", "X-Requested-With"]
+    CORS_ALLOW_HEADERS = ["Content-Type", "Authorization", "X-Requested-With", "X-Tenant"]
     CORS_EXPOSE_HEADERS = ["Content-Type"]
     CORS_MAX_AGE = int(os.getenv("CORS_MAX_AGE", "86400"))
 
