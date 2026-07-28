@@ -17,6 +17,7 @@ from app.routes import (
     student_bp,
     subject_bp,
     teacher_bp,
+    tenant_bp,
     timetable_bp,
 )
 from app.utils.alert_engine import run_absentee_sweeper
@@ -87,6 +88,7 @@ def create_app(config_class=Config):
     app.register_blueprint(timetable_bp)
     app.register_blueprint(subject_bp)
     app.register_blueprint(payment_bp)
+    app.register_blueprint(tenant_bp)
 
     @app.errorhandler(404)
     def not_found(_error):
