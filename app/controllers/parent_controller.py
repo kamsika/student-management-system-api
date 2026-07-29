@@ -58,7 +58,7 @@ def parent_login(data):
             f"[PARENT AUTH] Login failed: institution suspended "
             f"institution_id={matched.institution_id}"
         )
-        return {"errors": ["Institution is suspended"]}, 403
+        return {"errors": ["Your institution has been suspended. Please contact the Super Admin."]}, 403
 
     linked_children = Student.query.filter_by(parent_id=matched.id).count()
     if linked_children == 0:

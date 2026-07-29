@@ -7,6 +7,10 @@ from app.extensions import db
 from app.models import BillingRecord, Institution, User
 from app.utils import utc_now
 
+INSTITUTION_SUSPENDED_MESSAGE = (
+    "Your institution has been suspended. Please contact the Super Admin."
+)
+
 
 def login_user(data):
     email = (data.get("email") or "").strip().lower()
@@ -45,7 +49,7 @@ def login_user(data):
     if user.role != "super_admin" and user.institution:
         if user.institution.status == "Suspended":
             print(f"[AUTH] Login failed: institution suspended institution_id={user.institution_id}")
-            return {"errors": ["Institution is suspended"]}, 403
+            return {"errors": [INSTITUTION_SUSPENDED_MESSAGE]}, 403
 
     token = create_access_token(
         identity=str(user.id),
@@ -71,7 +75,7 @@ def get_authenticated_user(user):
 
     if user.role != "super_admin" and user.institution:
         if user.institution.status == "Suspended":
-            return {"errors": ["Institution is suspended"]}, 403
+            return {"errors": [INSTITUTION_SUSPENDED_MESSAGE]}, 403
 
     return {"user": user.to_dict(include_institution=True)}, 200
 
