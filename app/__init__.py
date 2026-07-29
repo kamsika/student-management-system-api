@@ -17,6 +17,7 @@ from app.routes import (
     study_log_bp,
     student_bp,
     subject_bp,
+    super_admin_bp,
     teacher_bp,
     tenant_bp,
     timetable_bp,
@@ -91,6 +92,7 @@ def create_app(config_class=Config):
     app.register_blueprint(subject_bp)
     app.register_blueprint(payment_bp)
     app.register_blueprint(tenant_bp)
+    app.register_blueprint(super_admin_bp)
 
     @app.errorhandler(404)
     def not_found(_error):
