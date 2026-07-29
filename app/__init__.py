@@ -6,6 +6,7 @@ from flask_jwt_extended import JWTManager
 from app.config import Config
 from app.extensions import db, jwt
 from app.routes import (
+    admin_bp,
     attendance_bp,
     auth_bp,
     classroom_bp,
@@ -93,6 +94,7 @@ def create_app(config_class=Config):
     app.register_blueprint(payment_bp)
     app.register_blueprint(tenant_bp)
     app.register_blueprint(super_admin_bp)
+    app.register_blueprint(admin_bp)
 
     @app.errorhandler(404)
     def not_found(_error):
@@ -175,6 +177,8 @@ def _apply_schema_updates(app):
         # Ensure password hashes are never truncated (breaks login verification).
         if password_col is not None:
             db.session.execute(text("ALTER TABLE users MODIFY COLUMN password VARCHAR(512) NOT NULL"))
+        if "last_login_at" not in user_columns:
+            db.session.execute(text("ALTER TABLE users ADD COLUMN last_login_at DATETIME NULL"))
 
     if "students" in table_names:
         existing = {column["name"] for column in inspector.get_columns("students")}
@@ -351,6 +355,27 @@ def _apply_schema_updates(app):
                 """
             )
         )
+
+    if "institutions" in table_names:
+        institution_cols = {column["name"] for column in inspector.get_columns("institutions")}
+        institution_additions = {
+            "updated_at": "DATETIME NULL",
+            "contact_email": "VARCHAR(255) NULL",
+            "phone": "VARCHAR(50) NULL",
+            "address": "TEXT NULL",
+            "description": "TEXT NULL",
+            "logo_url": "LONGTEXT NULL",
+            "primary_color": "VARCHAR(7) NOT NULL DEFAULT '#0047AB'",
+            "secondary_color": "VARCHAR(7) NOT NULL DEFAULT '#FFFFFF'",
+            "accent_color": "VARCHAR(7) NOT NULL DEFAULT '#F9BF15'",
+            "theme_preset": "VARCHAR(50) NOT NULL DEFAULT 'royal_blue'",
+            "notification_settings": "JSON NULL",
+        }
+        for column_name, column_type in institution_additions.items():
+            if column_name not in institution_cols:
+                db.session.execute(
+                    text(f"ALTER TABLE institutions ADD COLUMN {column_name} {column_type}")
+                )
 
     db.session.commit()
 

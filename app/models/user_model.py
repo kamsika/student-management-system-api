@@ -30,6 +30,7 @@ class User(db.Model):
     full_name = db.Column(db.String(255), nullable=False)
     phone_number = db.Column(db.String(50), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
+    last_login_at = db.Column(db.DateTime, nullable=True)
 
     taught_classrooms = db.relationship("Classroom", backref="teacher", lazy=True, foreign_keys="Classroom.teacher_id")
     student_profile = db.relationship("Student", backref="user", lazy=True, foreign_keys="Student.user_id", uselist=False)
@@ -61,6 +62,7 @@ class User(db.Model):
             "full_name": self.full_name,
             "phone_number": self.phone_number,
             "is_active": self.is_active,
+            "last_login_at": to_iso(self.last_login_at) if self.last_login_at else None,
         }
         if include_institution and self.institution:
             data["institution"] = self.institution.to_dict()

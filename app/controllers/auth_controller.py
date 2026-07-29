@@ -51,6 +51,9 @@ def login_user(data):
             print(f"[AUTH] Login failed: institution suspended institution_id={user.institution_id}")
             return {"errors": [INSTITUTION_SUSPENDED_MESSAGE]}, 403
 
+    user.last_login_at = utc_now()
+    db.session.commit()
+
     token = create_access_token(
         identity=str(user.id),
         additional_claims={

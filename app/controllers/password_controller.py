@@ -61,3 +61,35 @@ def change_institution_admin_password(institution_id, data):
     except Exception:
         db.session.rollback()
         return {"errors": ["Failed to update admin password"]}, 500
+
+
+def change_admin_password(user, data):
+    if not user or user.role != "institution_admin":
+        return {"errors": ["Insufficient permissions"]}, 403
+
+    current_password = data.get("current_password")
+    new_password = data.get("new_password")
+
+    if not current_password or not str(current_password):
+        return {"errors": ["Current password is required"]}, 400
+
+    errors = _password_errors(new_password, "New password")
+    if errors:
+        return {"errors": errors}, 400
+
+    if str(new_password) == str(current_password):
+        return {"errors": ["New password must be different from current password"]}, 400
+
+    if not user.check_password(current_password):
+        return {"errors": ["Current password is incorrect"]}, 400
+
+    try:
+        user.set_password(new_password)
+        if not user.check_password(new_password):
+            db.session.rollback()
+            return {"errors": ["Failed to hash password"]}, 500
+        db.session.commit()
+        return {"message": "Password updated successfully"}, 200
+    except Exception:
+        db.session.rollback()
+        return {"errors": ["Failed to update password"]}, 500
