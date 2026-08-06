@@ -561,3 +561,200 @@ def export_teacher_attendance_history(
         "mimetype": "text/csv",
         "content": csv_text.encode("utf-8-sig"),
     }, 200
+
+
+def _teacher_assigned_classroom_ids(user):
+    """Classrooms where the teacher is homeroom or subject teacher."""
+    classrooms = Classroom.query.filter_by(institution_id=user.institution_id).all()
+    assigned = []
+    for classroom in classrooms:
+        if classroom.teacher_id == user.id:
+            assigned.append(classroom)
+            continue
+        for item in classroom.get_subject_teachers():
+            if item.get("teacher_id") == user.id:
+                assigned.append(classroom)
+                break
+    return assigned
+
+
+def _teacher_can_manage_student_face(student, user):
+    """Teachers may manage faces only for students in their institution / assigned classes."""
+    if not student or not user or user.role != "teacher":
+        return False
+    if not user.institution_id or student.institution_id != user.institution_id:
+        return False
+
+    assigned = _teacher_assigned_classroom_ids(user)
+    if not assigned:
+        # Center-wide checker with no classroom assignment — institution scope is enough.
+        return True
+
+    assigned_grades = {
+        (classroom.grade or "").strip().lower()
+        for classroom in assigned
+        if (classroom.grade or "").strip()
+    }
+    if not assigned_grades:
+        return True
+
+    student_grade = (student.grade or "").strip().lower()
+    if not student_grade:
+        return True
+
+    return student_grade in assigned_grades
+
+
+def _face_status_payload(student, row):
+    from app.controllers.student_controller import _student_detail_dict
+
+    embedding = row.face_embedding if row else student.face_descriptor
+    registered = bool(embedding)
+    detail = _student_detail_dict(student)
+    return {
+        "student_id": student.id,
+        "studentId": student.id,
+        "registration_no": student.registration_no,
+        "full_name": student.user.full_name if student.user else None,
+        "has_face": registered,
+        "face_status": "Registered" if registered else "Not Registered",
+        "faceStatus": "Registered" if registered else "Not Registered",
+        "institution_id": student.institution_id,
+        "institutionId": student.institution_id,
+        "registered_by": row.registered_by if row else None,
+        "registeredBy": row.registered_by if row else None,
+        "registration_date": row.to_dict().get("registration_date") if row else None,
+        "registrationDate": row.to_dict().get("registration_date") if row else None,
+        "updated_at": row.to_dict().get("updated_at") if row else None,
+        "updatedAt": row.to_dict().get("updated_at") if row else None,
+        "student": detail,
+    }
+
+
+def get_teacher_student_face_status(student_id, user):
+    from app.models import FaceData
+
+    if user.role != "teacher":
+        return {"errors": ["Access denied"]}, 403
+
+    student = Student.query.get(student_id)
+    if not student:
+        return {"errors": ["Student not found"]}, 404
+    if not _teacher_can_manage_student_face(student, user):
+        return {"errors": ["Access denied — student is outside your institution or assigned classes"]}, 403
+
+    row = FaceData.query.filter_by(student_id=student.id).first()
+    return _face_status_payload(student, row), 200
+
+
+def register_teacher_student_face(student_id, data, user):
+    from app.controllers.face_controller import (
+        _parse_descriptor_list,
+        upsert_student_face_embedding,
+    )
+    from app.extensions import db
+    from app.models import FaceData
+
+    if user.role != "teacher":
+        return {"errors": ["Access denied"]}, 403
+
+    student = Student.query.get(student_id)
+    if not student:
+        return {"errors": ["Student not found"]}, 404
+    if not _teacher_can_manage_student_face(student, user):
+        return {"errors": ["Access denied — student is outside your institution or assigned classes"]}, 403
+
+    existing = FaceData.query.filter_by(student_id=student.id).first()
+    if existing or student.face_descriptor:
+        return {
+            "errors": ["Face already registered. Use update-face to replace the embedding."],
+        }, 409
+
+    embedding = _parse_descriptor_list(data or {})
+    if not embedding:
+        return {"errors": ["Provide descriptor or embeddings (128-d vectors)"]}, 400
+
+    try:
+        row = upsert_student_face_embedding(student, embedding, registered_by=user.id)
+        db.session.commit()
+        db.session.refresh(student)
+        return {
+            "success": True,
+            "message": "Face registered successfully",
+            "face": row.to_dict(),
+            **_face_status_payload(student, row),
+        }, 201
+    except Exception as exc:
+        db.session.rollback()
+        print(f"[TEACHER FACE] register failed student_id={student_id}: {exc}")
+        return {"errors": ["Failed to register face"]}, 500
+
+
+def update_teacher_student_face(student_id, data, user):
+    from app.controllers.face_controller import (
+        _parse_descriptor_list,
+        upsert_student_face_embedding,
+    )
+    from app.extensions import db
+    from app.models import FaceData
+
+    if user.role != "teacher":
+        return {"errors": ["Access denied"]}, 403
+
+    student = Student.query.get(student_id)
+    if not student:
+        return {"errors": ["Student not found"]}, 404
+    if not _teacher_can_manage_student_face(student, user):
+        return {"errors": ["Access denied — student is outside your institution or assigned classes"]}, 403
+
+    existing = FaceData.query.filter_by(student_id=student.id).first()
+    if not existing and not student.face_descriptor:
+        return {"errors": ["No face registered yet. Use register-face first."]}, 404
+
+    embedding = _parse_descriptor_list(data or {})
+    if not embedding:
+        return {"errors": ["Provide descriptor or embeddings (128-d vectors)"]}, 400
+
+    try:
+        row = upsert_student_face_embedding(student, embedding, registered_by=user.id)
+        db.session.commit()
+        db.session.refresh(student)
+        return {
+            "success": True,
+            "message": "Face embedding updated successfully",
+            "face": row.to_dict(),
+            **_face_status_payload(student, row),
+        }, 200
+    except Exception as exc:
+        db.session.rollback()
+        print(f"[TEACHER FACE] update failed student_id={student_id}: {exc}")
+        return {"errors": ["Failed to update face"]}, 500
+
+
+def delete_teacher_student_face(student_id, user):
+    from app.controllers.face_controller import delete_student_face_embedding
+    from app.extensions import db
+
+    if user.role != "teacher":
+        return {"errors": ["Access denied"]}, 403
+
+    student = Student.query.get(student_id)
+    if not student:
+        return {"errors": ["Student not found"]}, 404
+    if not _teacher_can_manage_student_face(student, user):
+        return {"errors": ["Access denied — student is outside your institution or assigned classes"]}, 403
+
+    try:
+        removed = delete_student_face_embedding(student)
+        if not removed:
+            return {"errors": ["No face registered for this student"]}, 404
+        db.session.commit()
+        return {
+            "success": True,
+            "message": "Face data deleted successfully",
+            **_face_status_payload(student, None),
+        }, 200
+    except Exception as exc:
+        db.session.rollback()
+        print(f"[TEACHER FACE] delete failed student_id={student_id}: {exc}")
+        return {"errors": ["Failed to delete face"]}, 500
