@@ -6,8 +6,16 @@ from app.utils.face_embedding_utils import average_embeddings, find_best_face_ma
 
 def _authorize_student(student, user):
     from app.controllers.student_controller import _authorize_student_access
+    from app.controllers.teacher_controller import _teacher_can_manage_student_face
 
-    return _authorize_student_access(student, user)
+    denied = _authorize_student_access(student, user)
+    if denied:
+        return denied
+    if user.role == "teacher" and not _teacher_can_manage_student_face(student, user):
+        return {
+            "errors": ["Access denied — student is outside your institution or assigned classes"]
+        }, 403
+    return None
 
 
 def _parse_descriptor(data):

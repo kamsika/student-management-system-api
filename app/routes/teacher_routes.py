@@ -81,7 +81,7 @@ def attendance_export_pdf():
 
 @teacher_bp.post("/students/<int:student_id>/register-face")
 @jwt_required()
-@role_required("teacher")
+@role_required("institution_admin", "teacher")
 def register_student_face(student_id):
     user = get_current_user()
     result, status = register_teacher_student_face(

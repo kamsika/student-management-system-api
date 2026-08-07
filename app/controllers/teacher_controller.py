@@ -579,10 +579,14 @@ def _teacher_assigned_classroom_ids(user):
 
 
 def _teacher_can_manage_student_face(student, user):
-    """Teachers may manage faces only for students in their institution / assigned classes."""
-    if not student or not user or user.role != "teacher":
+    """Authorize face management by role, tenant, and teacher assignment."""
+    if not student or not user:
         return False
     if not user.institution_id or student.institution_id != user.institution_id:
+        return False
+    if user.role == "institution_admin":
+        return True
+    if user.role != "teacher":
         return False
 
     assigned = _teacher_assigned_classroom_ids(user)
@@ -655,7 +659,7 @@ def register_teacher_student_face(student_id, data, user):
     from app.extensions import db
     from app.models import FaceData
 
-    if user.role != "teacher":
+    if user.role not in ("institution_admin", "teacher"):
         return {"errors": ["Access denied"]}, 403
 
     student = Student.query.get(student_id)
