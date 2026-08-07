@@ -383,7 +383,7 @@ Valid values: `Active`, `Suspended`
 `status` is optional. If omitted, the API calculates `Present`, `Late`, or `Absent` from the classroom schedule.
 
 **QR timetable behavior:** a QR scan marks the student's active timetable class. If the next
-timetable class starts exactly when the active class ends, it is treated as a continuous class
+timetable class starts within five minutes after the active class ends, it is treated as a continuous class
 and is marked by the same scan. A later class with any real break remains separate and can be
 marked by scanning again during its 10-minute pre-start window or while it is in progress.
 

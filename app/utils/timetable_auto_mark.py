@@ -13,9 +13,9 @@ from app.utils import APP_TIMEZONE, get_app_tz, local_now
 
 # A scan can count for a class that starts within this many minutes.
 UPCOMING_WINDOW_MINUTES = 10
-# Back-to-back classes: the next class must start exactly when the current one
-# ends. A real break means the later class requires its own scan.
-CONTINUOUS_GAP_MINUTES = 0
+# Treat a short room-change interval as part of the same class chain. Longer
+# breaks require a new scan.
+CONTINUOUS_GAP_MINUTES = 5
 
 _VALID_DAYS = (
     "Monday",
@@ -98,6 +98,30 @@ def current_day_of_week(now: Optional[datetime] = None) -> str:
 def current_minutes(now: Optional[datetime] = None) -> int:
     now = now or local_now()
     return now.hour * 60 + now.minute
+
+
+def ensure_local_naive(value: datetime) -> datetime:
+    """Return an app-local, timezone-naive datetime for wall-clock matching."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(get_app_tz()).replace(tzinfo=None)
+
+
+def filter_slots_by_enrollment(slots, enrolled_subjects):
+    """Return only slots whose subject appears in the student's enrollment."""
+    enrolled = [
+        str(name).strip()
+        for name in (enrolled_subjects or [])
+        if str(name).strip()
+    ]
+    enrolled_keys = {name.casefold() for name in enrolled}
+    matched = [
+        slot
+        for slot in slots
+        if str(getattr(slot, "subject_name", "")).strip().casefold()
+        in enrolled_keys
+    ]
+    return matched, enrolled, enrolled_keys
 
 
 def _unique_slots(slots):
@@ -242,7 +266,7 @@ def find_current_class(slots, now_minutes: Optional[int] = None):
 
 
 def collect_continuous_classes(slots, current_slot):
-    """Return the current class and directly adjacent following classes.
+    """Return the current class and its directly adjacent class chain.
 
     This is intentionally based on the timetable boundary rather than a broad
     time window. For example, 15:00-16:00 followed by 16:00-17:00 is one scan
@@ -263,7 +287,19 @@ def collect_continuous_classes(slots, current_slot):
     except StopIteration:
         return [current_slot]
 
-    selected = [ordered[index]]
+    first = index
+    while first > 0:
+        previous = ordered[first - 1]
+        current = ordered[first]
+        try:
+            gap = time_to_minutes(current.start_time) - time_to_minutes(previous.end_time)
+        except ValueError:
+            break
+        if not 0 <= gap <= CONTINUOUS_GAP_MINUTES:
+            break
+        first -= 1
+
+    selected = ordered[first : index + 1]
     cursor = index
     while cursor + 1 < len(ordered):
         current = ordered[cursor]
@@ -274,7 +310,7 @@ def collect_continuous_classes(slots, current_slot):
             break
         # Overlapping slots are not treated as a continuous chain: there is no
         # unambiguous class transition at which to carry attendance forward.
-        if gap == CONTINUOUS_GAP_MINUTES:
+        if 0 <= gap <= CONTINUOUS_GAP_MINUTES:
             print(
                 f"[TIMETABLE] Continuous class linked "
                 f"{current.subject_name!r} -> {nxt.subject_name!r} gap={gap}m"
@@ -285,6 +321,26 @@ def collect_continuous_classes(slots, current_slot):
         break
 
     return selected
+
+
+def collect_gap_scheduled_classes(slots, continuous_slots, now_minutes=None):
+    """Return future classes not included in the current continuous chain."""
+    now_minutes = current_minutes() if now_minutes is None else now_minutes
+    continuous_ids = {getattr(slot, "id", None) for slot in continuous_slots}
+    scheduled = []
+    for slot in slots:
+        if getattr(slot, "id", None) in continuous_ids:
+            continue
+        try:
+            if time_to_minutes(slot.end_time) < now_minutes:
+                continue
+        except ValueError:
+            continue
+        scheduled.append(slot)
+    return sorted(
+        scheduled,
+        key=lambda slot: (time_to_minutes(slot.start_time), getattr(slot, "id", 0)),
+    )
 
 
 def resolve_auto_mark_subjects(
