@@ -175,6 +175,13 @@ def _student_detail_dict(student, user=None):
     payload["current_month_fee"] = payment_payload
     payload["paymentStatus"] = payment_payload.get("payment_status")
     payload["payment_status"] = payment_payload.get("payment_status")
+
+    from app.models import FaceData
+
+    face_row = FaceData.query.filter_by(student_id=student.id).first()
+    payload["has_face_descriptor"] = bool(
+        (face_row and face_row.face_embedding) or student.face_descriptor
+    )
     return payload
 
 
@@ -704,6 +711,9 @@ def list_face_profiles(user):
                 "id": payload["id"],
                 "registration_no": payload["registration_no"],
                 "full_name": payload["full_name"],
+                "grade": payload.get("grade"),
+                "enrolled_subjects": payload.get("enrolled_subjects") or [],
+                "enrolledSubjects": payload.get("enrolledSubjects") or payload.get("enrolled_subjects") or [],
                 "descriptor": embedding,
                 "has_face_descriptor": bool(embedding),
             }

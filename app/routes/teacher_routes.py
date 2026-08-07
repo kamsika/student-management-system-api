@@ -4,8 +4,12 @@ import io
 from flask_jwt_extended import jwt_required
 
 from app.controllers.teacher_controller import (
+    delete_teacher_student_face,
     export_teacher_attendance_history,
     get_teacher_attendance_overview,
+    get_teacher_student_face_status,
+    register_teacher_student_face,
+    update_teacher_student_face,
 )
 from app.middleware import get_current_user, role_required
 
@@ -73,3 +77,43 @@ def attendance_export_pdf():
         as_attachment=True,
         download_name=result["filename"],
     )
+
+
+@teacher_bp.post("/students/<int:student_id>/register-face")
+@jwt_required()
+@role_required("teacher")
+def register_student_face(student_id):
+    user = get_current_user()
+    result, status = register_teacher_student_face(
+        student_id, request.get_json(silent=True) or {}, user
+    )
+    return result, status
+
+
+@teacher_bp.put("/students/<int:student_id>/update-face")
+@jwt_required()
+@role_required("teacher")
+def update_student_face(student_id):
+    user = get_current_user()
+    result, status = update_teacher_student_face(
+        student_id, request.get_json(silent=True) or {}, user
+    )
+    return result, status
+
+
+@teacher_bp.delete("/students/<int:student_id>/delete-face")
+@jwt_required()
+@role_required("teacher")
+def delete_student_face(student_id):
+    user = get_current_user()
+    result, status = delete_teacher_student_face(student_id, user)
+    return result, status
+
+
+@teacher_bp.get("/students/<int:student_id>/face-status")
+@jwt_required()
+@role_required("teacher")
+def student_face_status(student_id):
+    user = get_current_user()
+    result, status = get_teacher_student_face_status(student_id, user)
+    return result, status

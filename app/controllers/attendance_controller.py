@@ -717,12 +717,17 @@ def create_attendance(data, user):
             **_scan_extras(marked=[]),
         }, 403
 
-    # No active timetable class right now → do NOT mark other enrolled subjects.
+    # No active timetable class right now → do NOT mark Present.
     if not subjects:
         return {
             "success": True,
             "status": "NoClass",
-            "message": "No timetable class is scheduled for this student at the current time",
+            "attendanceStatus": "Absent",
+            "attendance_status": "Absent",
+            "message": (
+                "No timetable class is scheduled for this student at the current time. "
+                "Attendance status is Absent (not Present)."
+            ),
             "data": None,
             "attendance": None,
             **_scan_extras(marked=[]),
@@ -1102,23 +1107,47 @@ def get_manual_attendance_roster(user, classroom_id=None, subject_name=None, dat
     }, 200
 
 
-def scan_center_attendance(data, user):
-    """Mark attendance by QR value for selected enrolled subjects (checker flow)."""
+def process_attendance(data, user, attendance_method=None):
+    """
+    Shared attendance processor for QR and Face scanners.
+
+    Identifies the student from student_id / registration_no, applies enrolled-subject
+    selection, duplicate checks, and writes via mark_attendance.
+    attendance_method: "qr" | "face" (default qr).
+    """
     if user.role != "teacher":
         return {"errors": ["Only teachers can use the live scanner"]}, 403
 
+    method_raw = (
+        attendance_method
+        or data.get("attendance_method")
+        or data.get("attendanceMethod")
+        or data.get("marked_via")
+        or data.get("markedVia")
+        or "qr"
+    )
+    method = str(method_raw).strip().lower()
+    if method in ("face", "face_recognition", "facerecognition"):
+        method = "face"
+    elif method in ("qr", "qr_code", "qrcode"):
+        method = "qr"
+    else:
+        method = "qr"
+
     raw_student_id = data.get("student_id")
-    registration_no = (data.get("registration_no") or "").strip()
+    if raw_student_id is None:
+        raw_student_id = data.get("studentId")
+    registration_no = (data.get("registration_no") or data.get("registrationNo") or "").strip()
     scanned_id = ""
     if raw_student_id is not None and str(raw_student_id).strip():
         scanned_id = str(raw_student_id).strip()
     elif registration_no:
         scanned_id = registration_no
 
-    print(f"[ATTENDANCE] Received attendance request for ID: {scanned_id!r}")
+    print(f"[ATTENDANCE] process_attendance method={method!r} student={scanned_id!r}")
 
     if not scanned_id:
-        return {"errors": ["student_id is required (scanned QR value)"]}, 400
+        return {"errors": ["student_id is required"]}, 400
 
     if not user.institution_id:
         return {"errors": ["Teacher is not linked to a center"]}, 400
@@ -1126,9 +1155,13 @@ def scan_center_attendance(data, user):
     student = _find_student_in_center(user.institution_id, scanned_id)
     if not student:
         return {
-            "errors": [f"Invalid QR code. Student not found in your center: {scanned_id}"],
+            "errors": [f"Student not found in your center: {scanned_id}"],
             "invalid_qr": True,
         }, 404
+
+    # Active check via linked user account (student already scoped to teacher's center).
+    if student.user is not None and getattr(student.user, "is_active", True) is False:
+        return {"errors": ["Student account is inactive"]}, 403
 
     classroom_id = data.get("classroom_id")
     if classroom_id is None:
@@ -1235,7 +1268,7 @@ def scan_center_attendance(data, user):
                 "prevent_duplicate": True,
                 "subject_name": selection["subject_name"],
                 "subject_id": selection["subject_id"],
-                "marked_via": "qr",
+                "marked_via": method,
             },
             user,
         )
@@ -1295,6 +1328,8 @@ def scan_center_attendance(data, user):
         http_status = 200
         message = "Attendance processed"
 
+    method_label = "FACE" if method == "face" else "QR"
+
     return {
         "success": True,
         "status": status,
@@ -1311,6 +1346,10 @@ def scan_center_attendance(data, user):
         "marked_by": user.id,
         "checkerId": user.id,
         "checker_id": user.id,
+        "markedVia": method,
+        "marked_via": method,
+        "attendanceMethod": method_label,
+        "attendance_method": method_label,
         "attendance": records[0] if records else None,
         "data": records[0] if records else None,
         "records": records,
@@ -1322,6 +1361,11 @@ def scan_center_attendance(data, user):
         "enrolledSubjects": enrolled,
         "enrolled_subjects": enrolled,
     }, http_status
+
+
+def scan_center_attendance(data, user):
+    """QR / Face scanner entry — delegates to shared process_attendance."""
+    return process_attendance(data, user)
 
 
 def get_center_attendance(

@@ -29,16 +29,26 @@ def _parse_descriptor_list(data):
     return _parse_descriptor(data)
 
 
-def upsert_student_face_embedding(student: Student, embedding: list[float]) -> FaceData:
+def upsert_student_face_embedding(
+    student: Student,
+    embedding: list[float],
+    *,
+    registered_by=None,
+) -> FaceData:
     row = FaceData.query.filter_by(student_id=student.id).first()
     now = utc_now()
     if row:
         row.face_embedding = embedding
         row.updated_at = now
+        row.institution_id = student.institution_id
+        if registered_by is not None:
+            row.registered_by = registered_by
     else:
         row = FaceData(
             student_id=student.id,
+            institution_id=student.institution_id,
             face_embedding=embedding,
+            registered_by=registered_by,
             created_at=now,
             updated_at=now,
         )
@@ -67,7 +77,7 @@ def register_face(data, user):
         return {"errors": ["Provide descriptor or embeddings (128-d vectors)"]}, 400
 
     try:
-        row = upsert_student_face_embedding(student, embedding)
+        row = upsert_student_face_embedding(student, embedding, registered_by=user.id)
         db.session.commit()
         db.session.refresh(student)
         return {
@@ -80,6 +90,19 @@ def register_face(data, user):
         db.session.rollback()
         print(f"[FACE] register failed student_id={student_id}: {exc}")
         return {"errors": ["Failed to register face profile"]}, 500
+
+
+def delete_student_face_embedding(student: Student) -> bool:
+    """Remove FaceData row and clear legacy student.face_descriptor. Returns True if something was removed."""
+    row = FaceData.query.filter_by(student_id=student.id).first()
+    removed = False
+    if row:
+        db.session.delete(row)
+        removed = True
+    if student.face_descriptor:
+        student.face_descriptor = None
+        removed = True
+    return removed
 
 
 def get_student_face(student_id, user):
@@ -190,6 +213,9 @@ def list_institution_face_embeddings(user):
                 "id": student.id,
                 "registration_no": student.registration_no,
                 "full_name": student.user.full_name if student.user else None,
+                "grade": student.grade,
+                "enrolled_subjects": student.get_enrolled_subjects(),
+                "enrolledSubjects": student.get_enrolled_subjects(),
                 "descriptor": embedding,
                 "has_face_descriptor": bool(embedding),
             }
