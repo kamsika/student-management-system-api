@@ -155,6 +155,7 @@ def _migrate_legacy_face_descriptors():
             db.session.add(
                 FaceData(
                     student_id=student.id,
+                    institution_id=student.institution_id,
                     face_embedding=student.face_descriptor,
                     created_at=now,
                     updated_at=now,
@@ -376,6 +377,34 @@ def _apply_schema_updates(app):
                 db.session.execute(
                     text(f"ALTER TABLE institutions ADD COLUMN {column_name} {column_type}")
                 )
+
+    if "face_data" in table_names:
+        face_cols = {column["name"] for column in inspector.get_columns("face_data")}
+        if "institution_id" not in face_cols:
+            db.session.execute(
+                text(
+                    "ALTER TABLE face_data ADD COLUMN institution_id INT NULL, "
+                    "ADD INDEX ix_face_data_institution_id (institution_id)"
+                )
+            )
+        if "registered_by" not in face_cols:
+            db.session.execute(
+                text(
+                    "ALTER TABLE face_data ADD COLUMN registered_by INT NULL, "
+                    "ADD INDEX ix_face_data_registered_by (registered_by)"
+                )
+            )
+        # Backfill institution_id from students when missing.
+        db.session.execute(
+            text(
+                """
+                UPDATE face_data fd
+                INNER JOIN students s ON s.id = fd.student_id
+                SET fd.institution_id = s.institution_id
+                WHERE fd.institution_id IS NULL
+                """
+            )
+        )
 
     db.session.commit()
 
