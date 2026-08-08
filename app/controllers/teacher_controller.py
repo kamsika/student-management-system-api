@@ -589,24 +589,13 @@ def _teacher_can_manage_student_face(student, user):
     if user.role != "teacher":
         return False
 
-    assigned = _teacher_assigned_classroom_ids(user)
-    if not assigned:
-        # Center-wide checker with no classroom assignment — institution scope is enough.
-        return True
-
     assigned_grades = {
-        (classroom.grade or "").strip().lower()
-        for classroom in assigned
-        if (classroom.grade or "").strip()
+        _normalize_grade_key(classroom.grade or classroom.name)
+        for classroom in _teacher_assigned_classroom_ids(user)
+        if _normalize_grade_key(classroom.grade or classroom.name)
     }
-    if not assigned_grades:
-        return True
-
-    student_grade = (student.grade or "").strip().lower()
-    if not student_grade:
-        return True
-
-    return student_grade in assigned_grades
+    student_grade = _normalize_grade_key(student.grade)
+    return bool(student_grade and student_grade in assigned_grades)
 
 
 def _face_status_payload(student, row):

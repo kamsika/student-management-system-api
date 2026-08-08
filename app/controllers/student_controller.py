@@ -286,6 +286,58 @@ def _find_duplicate_student(institution_id, full_name, contact):
     return None
 
 
+def _resolve_teacher_admission_classroom(data, user, grade):
+    from app.controllers.teacher_controller import (
+        _normalize_grade_key,
+        _teacher_assigned_classroom_ids,
+    )
+
+    assigned_classrooms = _teacher_assigned_classroom_ids(user)
+    raw_classroom_id = next(
+        (
+            data.get(key)
+            for key in (
+                "classroom_id",
+                "classroomId",
+                "class_id",
+                "classId",
+                "grade_id",
+                "gradeId",
+            )
+            if data.get(key) is not None
+        ),
+        None,
+    )
+    if raw_classroom_id is not None and str(raw_classroom_id).strip():
+        try:
+            classroom_id = int(raw_classroom_id)
+        except (TypeError, ValueError):
+            return None, {"errors": ["classroom_id must be an integer"]}, 400
+        classroom = next(
+            (item for item in assigned_classrooms if item.id == classroom_id),
+            None,
+        )
+    else:
+        requested_grade = _normalize_grade_key(grade)
+        classroom = next(
+            (
+                item
+                for item in assigned_classrooms
+                if requested_grade
+                and _normalize_grade_key(item.grade) == requested_grade
+            ),
+            None,
+        )
+
+    if not classroom:
+        return (
+            None,
+            {"errors": ["Access denied — class is not assigned to this teacher"]},
+            403,
+        )
+    return classroom, None, None
+
+
 def list_students(user, search=None, grade=None):
     if user.role not in ("institution_admin", "teacher", "super_admin"):
         return {"errors": ["Access denied"]}, 403
@@ -549,7 +601,7 @@ def list_teachers(user):
 
 
 def create_student(data, user, default_password="Student@123"):
-    if user.role != "institution_admin":
+    if user.role not in ("institution_admin", "teacher"):
         return {"errors": ["Access denied"]}, 403
 
     full_name = (data.get("full_name") or data.get("name") or "").strip()
@@ -562,6 +614,16 @@ def create_student(data, user, default_password="Student@123"):
         if data.get("enrolledSubjects") is not None
         else data.get("enrolled_subjects")
     )
+
+    if user.role == "teacher":
+        selected_classroom, error, status = _resolve_teacher_admission_classroom(
+            data, user, grade
+        )
+        if error:
+            return error, status
+        grade = (
+            selected_classroom.grade or selected_classroom.name or ""
+        ).strip() or grade
 
     if not full_name:
         return {"errors": ["Name is required"]}, 400

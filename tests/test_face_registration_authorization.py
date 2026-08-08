@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app.controllers import face_controller, teacher_controller
+from app.controllers import face_controller, student_controller, teacher_controller
 
 
 def _user(role, institution_id=1, user_id=10):
@@ -24,7 +24,7 @@ def test_institution_admin_cannot_manage_cross_institution_student():
 
 
 def test_teacher_assignment_restriction_is_preserved(monkeypatch):
-    assigned_class = SimpleNamespace(grade="Grade 9")
+    assigned_class = SimpleNamespace(grade="Grade 9", name="Class 9")
     monkeypatch.setattr(
         teacher_controller,
         "_teacher_assigned_classroom_ids",
@@ -38,6 +38,84 @@ def test_teacher_assignment_restriction_is_preserved(monkeypatch):
     assert not teacher_controller._teacher_can_manage_student_face(
         _student(grade="Grade 10"), teacher
     )
+
+
+def test_teacher_assignment_accepts_equivalent_new_admission_grade(monkeypatch):
+    assigned_class = SimpleNamespace(grade="Grade 10", name="Class 10")
+    monkeypatch.setattr(
+        teacher_controller,
+        "_teacher_assigned_classroom_ids",
+        lambda _user: [assigned_class],
+    )
+
+    assert teacher_controller._teacher_can_manage_student_face(
+        _student(grade="10"), _user("teacher")
+    )
+
+
+def test_teacher_without_matching_assigned_grade_is_blocked(monkeypatch):
+    teacher = _user("teacher")
+    monkeypatch.setattr(
+        teacher_controller,
+        "_teacher_assigned_classroom_ids",
+        lambda _user: [],
+    )
+    assert not teacher_controller._teacher_can_manage_student_face(_student(), teacher)
+
+    monkeypatch.setattr(
+        teacher_controller,
+        "_teacher_assigned_classroom_ids",
+        lambda _user: [SimpleNamespace(grade="Grade 10", name="Class 10")],
+    )
+    assert not teacher_controller._teacher_can_manage_student_face(
+        _student(grade=None), teacher
+    )
+
+
+def test_teacher_admission_resolves_only_an_assigned_class(monkeypatch):
+    assigned = SimpleNamespace(id=7, grade="Grade 10", name="Class 10")
+    monkeypatch.setattr(
+        teacher_controller,
+        "_teacher_assigned_classroom_ids",
+        lambda _user: [assigned],
+    )
+
+    classroom, error, status = student_controller._resolve_teacher_admission_classroom(
+        {"classroom_id": 7}, _user("teacher"), "10"
+    )
+    assert classroom is assigned
+    assert error is None
+    assert status is None
+
+    classroom, error, status = student_controller._resolve_teacher_admission_classroom(
+        {"classroom_id": 8}, _user("teacher"), "10"
+    )
+    assert classroom is None
+    assert status == 403
+    assert "not assigned" in error["errors"][0]
+
+
+def test_teacher_admission_normalizes_grade_to_assigned_class(monkeypatch):
+    assigned = SimpleNamespace(id=7, grade="Grade 10", name="Class 10")
+    monkeypatch.setattr(
+        teacher_controller,
+        "_teacher_assigned_classroom_ids",
+        lambda _user: [assigned],
+    )
+
+    classroom, error, status = student_controller._resolve_teacher_admission_classroom(
+        {}, _user("teacher"), "10"
+    )
+    assert classroom is assigned
+    assert error is None
+    assert status is None
+
+    classroom, error, status = student_controller._resolve_teacher_admission_classroom(
+        {"grade_id": 7}, _user("teacher"), None
+    )
+    assert classroom is assigned
+    assert error is None
+    assert status is None
 
 
 def test_generic_face_authorization_applies_teacher_assignment(monkeypatch):

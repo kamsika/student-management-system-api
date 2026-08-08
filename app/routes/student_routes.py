@@ -64,7 +64,7 @@ def get_one(student_id):
 
 @student_bp.post("")
 @jwt_required()
-@role_required("institution_admin")
+@role_required("institution_admin", "teacher")
 def create_one():
     user = get_current_user()
     result, status = create_student(request.get_json(silent=True) or {}, user)
