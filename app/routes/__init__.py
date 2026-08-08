@@ -13,6 +13,7 @@ from app.routes.face_routes import face_bp
 from app.routes.payment_routes import payment_bp
 from app.routes.admin_routes import admin_bp
 from app.routes.tenant_routes import tenant_bp
+from app.routes.tuition_routes import tuition_bp
 from app.routes.super_admin_routes import super_admin_bp
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "face_bp",
     "payment_bp",
     "tenant_bp",
+    "tuition_bp",
     "admin_bp",
     "super_admin_bp",
 ]

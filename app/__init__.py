@@ -22,6 +22,7 @@ from app.routes import (
     teacher_bp,
     tenant_bp,
     timetable_bp,
+    tuition_bp,
 )
 from app.utils.alert_engine import run_absentee_sweeper
 
@@ -94,6 +95,7 @@ def create_app(config_class=Config):
     app.register_blueprint(payment_bp)
     app.register_blueprint(tenant_bp)
     app.register_blueprint(super_admin_bp)
+    app.register_blueprint(tuition_bp)
     app.register_blueprint(admin_bp)
 
     @app.errorhandler(404)
@@ -125,6 +127,15 @@ def create_app(config_class=Config):
             replace_existing=True,
             args=[app],
         )
+        scheduler.add_job(
+            func=_scheduled_tuition_invoices,
+            trigger="cron",
+            hour=0,
+            minute=10,
+            id="monthly_tuition_invoices",
+            replace_existing=True,
+            args=[app],
+        )
         scheduler.start()
 
     return app
@@ -136,6 +147,13 @@ def _scheduled_sweeper(app):
             run_absentee_sweeper()
         except Exception:
             db.session.rollback()
+
+
+def _scheduled_tuition_invoices(app):
+    from app.controllers.tuition_controller import run_scheduled_invoice_generation
+
+    with app.app_context():
+        run_scheduled_invoice_generation()
 
 
 def _migrate_legacy_face_descriptors():
@@ -201,6 +219,13 @@ def _apply_schema_updates(app):
             db.session.execute(text("ALTER TABLE classrooms ADD COLUMN grade VARCHAR(50) NULL"))
         if "subject_teachers" not in classroom_cols:
             db.session.execute(text("ALTER TABLE classrooms ADD COLUMN subject_teachers JSON NULL"))
+
+    if "subjects" in table_names:
+        subject_cols = {column["name"] for column in inspector.get_columns("subjects")}
+        if "description" not in subject_cols:
+            db.session.execute(text("ALTER TABLE subjects ADD COLUMN description TEXT NULL"))
+        if "is_active" not in subject_cols:
+            db.session.execute(text("ALTER TABLE subjects ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"))
 
     # Timetable auto-marking: ensure tenant_id exists on older databases.
     if "timetables" in table_names:

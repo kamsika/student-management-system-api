@@ -415,6 +415,9 @@ def update_student_subjects(student_id, data, user):
 
     try:
         student.enrolled_subjects = subjects
+        from app.controllers.tuition_controller import sync_student_enrollments
+
+        sync_student_enrollments(student, subjects, user)
         db.session.commit()
         db.session.refresh(student)
         payload = _student_detail_dict(student, user=user)
@@ -614,6 +617,8 @@ def create_student(data, user, default_password="Student@123"):
         if data.get("enrolledSubjects") is not None
         else data.get("enrolled_subjects")
     )
+    joining_date_raw = data.get("joining_date", data.get("joiningDate"))
+    discount_raw = data.get("discount_amount", data.get("discountAmount", data.get("discount", 0)))
 
     if user.role == "teacher":
         selected_classroom, error, status = _resolve_teacher_admission_classroom(
@@ -686,6 +691,18 @@ def create_student(data, user, default_password="Student@123"):
             enrolled_subjects=enrolled_subjects,
         )
         db.session.add(student)
+        db.session.flush()
+
+        from app.controllers.tuition_controller import ZERO, _decimal, _parse_date, add_enrollment_snapshots
+
+        joining_date = _parse_date(joining_date_raw, local_today())
+        discount = _decimal(discount_raw, default=ZERO)
+        if not joining_date or discount is None or discount < ZERO:
+            db.session.rollback()
+            return {"errors": ["Invalid joining date or discount"]}, 400
+        add_enrollment_snapshots(
+            student, enrolled_subjects, user, joining_date=joining_date, discount=discount
+        )
         db.session.commit()
 
         return {

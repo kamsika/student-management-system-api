@@ -10,6 +10,17 @@ from app.models.timetable_model import Timetable
 from app.models.student_payment_model import StudentPayment
 from app.models.subject_model import Subject
 from app.models.face_data_model import FaceData
+from app.models.tuition_billing_model import (
+    AdvanceCreditLedger,
+    FeeReceipt,
+    FinancialAuditLog,
+    InvoiceLineItem,
+    MonthlyInvoice,
+    PaymentAllocation,
+    StudentSubjectEnrollment,
+    SubjectFee,
+    TuitionPayment,
+)
 
 __all__ = [
     "Institution",
@@ -24,4 +35,13 @@ __all__ = [
     "StudentPayment",
     "Subject",
     "FaceData",
+    "SubjectFee",
+    "StudentSubjectEnrollment",
+    "MonthlyInvoice",
+    "InvoiceLineItem",
+    "TuitionPayment",
+    "PaymentAllocation",
+    "AdvanceCreditLedger",
+    "FinancialAuditLog",
+    "FeeReceipt",
 ]
