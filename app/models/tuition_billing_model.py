@@ -25,6 +25,7 @@ class SubjectFee(db.Model):
     description = db.Column(db.Text, nullable=True)
     created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=utc_now)
+    updated_at = db.Column(db.DateTime, nullable=False, default=utc_now, onupdate=utc_now)
 
     subject = db.relationship("Subject", lazy=True)
 
@@ -55,6 +56,7 @@ class SubjectFee(db.Model):
             "description": self.description,
             "created_by": self.created_by,
             "created_at": to_iso(self.created_at),
+            "updated_at": to_iso(self.updated_at),
         }
 
 
@@ -180,6 +182,10 @@ class InvoiceLineItem(db.Model):
     status = db.Column(db.String(24), nullable=False, default="UNPAID")
 
     subject = db.relationship("Subject", lazy=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("invoice_id", "subject_id", name="uq_invoice_subject_line"),
+    )
 
     def to_dict(self):
         balance = max(MONEY_ZERO, Decimal(self.net_amount or 0) - Decimal(self.paid_amount or 0))

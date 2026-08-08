@@ -86,6 +86,43 @@ def test_admin_fee_configuration_and_teacher_denial(billing_data):
     assert status == 201
     assert result["subject_fee"]["monthly_fee"] == 2000.0
 
+    fee_id = result["subject_fee"]["id"]
+    _, status = tuition_controller.update_subject_fee(
+        fee_id, {"monthly_fee": "2100"}, billing_data["teacher"]
+    )
+    assert status == 403
+    _, status = tuition_controller.delete_subject_fee(fee_id, billing_data["teacher"])
+    assert status == 403
+
+
+def test_admin_can_edit_and_delete_unused_subject_fee(billing_data):
+    result, _ = tuition_controller.configure_subject_fee(
+        billing_data["subject"].id,
+        {"monthly_fee": "2000", "effective_from": "2026-08-01"},
+        billing_data["admin"],
+    )
+    fee_id = result["subject_fee"]["id"]
+    result, status = tuition_controller.update_subject_fee(
+        fee_id, {"monthly_fee": "2200", "effective_from": "2026-08-01"}, billing_data["admin"]
+    )
+    assert status == 200
+    assert result["subject_fee"]["monthly_fee"] == 2200.0
+    result, status = tuition_controller.delete_subject_fee(fee_id, billing_data["admin"])
+    assert status == 200
+    assert result["deleted"] is True
+
+
+def test_used_subject_fee_is_soft_deleted(billing_data):
+    _configure_and_enroll(billing_data)
+    tuition_controller.generate_invoice(billing_data["student"].id, "2026-08", billing_data["admin"])
+    fee = tuition_controller.current_subject_fee(
+        billing_data["subject"].id, billing_data["admin"].institution_id, date(2026, 8, 1)
+    )
+    result, status = tuition_controller.delete_subject_fee(fee.id, billing_data["admin"])
+    assert status == 200
+    assert result["deleted"] is False
+    assert result["deactivated"] is True
+
 
 def test_cross_institution_fee_access_is_denied(billing_data):
     result, status = tuition_controller.configure_subject_fee(
@@ -185,7 +222,65 @@ def test_credit_applies_to_next_invoice_and_pending_summary(billing_data):
         billing_data["student"].id, billing_data["teacher"], "2026-09"
     )
     assert status == 200
-    assert summary["fee_summary"]["overall_status"] == "PENDING"
+    assert summary["fee_summary"]["overall_status"] == "PARTIALLY_PAID"
+    assert summary["fee_summary"]["total_fee"] == 1000.0
+    assert summary["fee_summary"]["total_paid"] == 500.0
+    assert summary["fee_summary"]["subjects"][0]["status"] == "PARTIALLY_PAID"
+
+
+def test_no_payment_is_unpaid_and_full_payment_is_paid(billing_data):
+    _configure_and_enroll(billing_data, "1000.00")
+    tuition_controller.generate_invoice(billing_data["student"].id, "2026-08", billing_data["admin"])
+    summary, _ = tuition_controller.student_fee_summary(
+        billing_data["student"].id, billing_data["teacher"], "2026-08"
+    )
+    assert summary["fee_summary"]["overall_status"] == "UNPAID"
+    tuition_controller.record_tuition_payment(
+        {"student_id": billing_data["student"].id, "amount": "1000", "payment_method": "CASH"},
+        billing_data["teacher"], "paid-summary",
+    )
+    summary, _ = tuition_controller.student_fee_summary(
+        billing_data["student"].id, billing_data["teacher"], "2026-08"
+    )
+    assert summary["fee_summary"]["overall_status"] == "PAID"
+    assert summary["fee_summary"]["subjects"][0]["status"] == "PAID"
+
+
+def test_one_pending_subject_makes_overall_partially_paid(billing_data):
+    _configure_and_enroll(billing_data, "2000.00")
+    science = Subject(institution_id=billing_data["admin"].institution_id, name="Science")
+    db.session.add(science)
+    db.session.commit()
+    tuition_controller.configure_subject_fee(
+        science.id, {"monthly_fee": "1500", "effective_from": "2026-08-01"}, billing_data["admin"]
+    )
+    db.session.add(StudentSubjectEnrollment(
+        institution_id=billing_data["admin"].institution_id,
+        student_id=billing_data["student"].id,
+        subject_id=science.id,
+        start_date=date(2026, 8, 1),
+        fee_snapshot=Decimal("1500.00"),
+    ))
+    db.session.commit()
+    tuition_controller.generate_invoice(billing_data["student"].id, "2026-08", billing_data["admin"])
+    tuition_controller.record_tuition_payment(
+        {
+            "student_id": billing_data["student"].id,
+            "subject_id": billing_data["subject"].id,
+            "amount": "2000",
+            "payment_method": "CASH",
+        },
+        billing_data["teacher"], "math-only",
+    )
+    summary, _ = tuition_controller.student_fee_summary(
+        billing_data["student"].id, billing_data["teacher"], "2026-08"
+    )
+    assert summary["fee_summary"]["overall_status"] == "PARTIALLY_PAID"
+    statuses = {row["subject_name"]: row["status"] for row in summary["fee_summary"]["subjects"]}
+    assert statuses == {"Mathematics": "PAID", "Science": "UNPAID"}
+    assert summary["fee_summary"]["total_fee"] == 3500.0
+    assert summary["fee_summary"]["total_paid"] == 2000.0
+    assert summary["fee_summary"]["total_pending"] == 1500.0
 
 
 def test_refunded_payment_is_removed_and_teacher_cannot_refund(billing_data):

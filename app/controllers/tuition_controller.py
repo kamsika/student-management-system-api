@@ -117,7 +117,7 @@ def current_subject_fee(subject_id, institution_id, on_date=None):
     )
 
 
-def list_subject_fees(user, subject_id=None, history=False):
+def list_subject_fees(user, subject_id=None, history=False, search=None, status=None):
     if user.role not in ("institution_admin", "teacher", "super_admin"):
         return {"errors": ["Access denied"]}, 403
     query = SubjectFee.query
@@ -125,6 +125,10 @@ def list_subject_fees(user, subject_id=None, history=False):
         query = query.filter_by(institution_id=user.institution_id)
     if subject_id:
         query = query.filter_by(subject_id=int(subject_id))
+    if search:
+        query = query.join(Subject).filter(func.lower(Subject.name).like(f"%{str(search).strip().lower()}%"))
+    if status and str(status).lower() != "all":
+        query = query.filter(SubjectFee.is_active.is_(str(status).lower() == "active"))
     if not history:
         today = local_today()
         query = query.filter(
@@ -190,6 +194,70 @@ def configure_subject_fee(subject_id, data, user):
     except Exception:
         db.session.rollback()
         return {"errors": ["Failed to configure subject fee"]}, 500
+
+
+def update_subject_fee(fee_id, data, user):
+    if user.role != "institution_admin":
+        return {"errors": ["Access denied"]}, 403
+    fee = SubjectFee.query.filter_by(id=fee_id, institution_id=user.institution_id).first()
+    if not fee:
+        return {"errors": ["Subject fee not found"]}, 404
+    used = InvoiceLineItem.query.filter_by(
+        institution_id=user.institution_id, subject_id=fee.subject_id
+    ).first() is not None
+    amount_raw = data.get("monthly_fee", data.get("monthlyFee"))
+    amount = _decimal(amount_raw, default=Decimal(fee.monthly_fee))
+    effective = _parse_date(
+        data.get("effective_from", data.get("effectiveFrom")), fee.effective_from
+    )
+    if amount is None or amount < ZERO or not effective:
+        return {"errors": ["Invalid monthly fee or effective date"]}, 400
+    effective = effective.replace(day=1)
+    if used and (amount != Decimal(fee.monthly_fee) or effective != fee.effective_from):
+        return configure_subject_fee(fee.subject_id, {
+            "monthly_fee": str(amount),
+            "currency": data.get("currency", fee.currency),
+            "effective_from": effective.isoformat(),
+            "is_active": data.get("is_active", data.get("isActive", True)),
+            "description": data.get("description", fee.description),
+        }, user)
+    fee.monthly_fee = amount
+    fee.currency = str(data.get("currency") or fee.currency).upper()[:3]
+    fee.effective_from = effective
+    if "is_active" in data or "isActive" in data:
+        fee.is_active = bool(data.get("is_active", data.get("isActive")))
+    if "description" in data:
+        fee.description = str(data.get("description") or "").strip() or None
+    _audit(user, "SUBJECT_FEE_UPDATED", "subject_fee", fee.id, {"amount": str(amount)})
+    try:
+        db.session.commit()
+        return {"subject_fee": fee.to_dict(), "historical_version_created": False}, 200
+    except Exception:
+        db.session.rollback()
+        return {"errors": ["Failed to update subject fee"]}, 500
+
+
+def delete_subject_fee(fee_id, user):
+    if user.role != "institution_admin":
+        return {"errors": ["Access denied"]}, 403
+    fee = SubjectFee.query.filter_by(id=fee_id, institution_id=user.institution_id).first()
+    if not fee:
+        return {"errors": ["Subject fee not found"]}, 404
+    used = InvoiceLineItem.query.filter_by(
+        institution_id=user.institution_id, subject_id=fee.subject_id
+    ).first() is not None
+    if used:
+        fee.is_active = False
+        if fee.effective_to is None or fee.effective_to > local_today():
+            fee.effective_to = local_today()
+        _audit(user, "SUBJECT_FEE_DEACTIVATED", "subject_fee", fee.id)
+        db.session.commit()
+        return {"subject_fee": fee.to_dict(), "deleted": False, "deactivated": True}, 200
+    payload = fee.to_dict()
+    _audit(user, "SUBJECT_FEE_DELETED", "subject_fee", fee.id)
+    db.session.delete(fee)
+    db.session.commit()
+    return {"subject_fee": payload, "deleted": True, "deactivated": False}, 200
 
 
 def fee_preview(subject_names, institution_id, joining_date=None, discount=ZERO):
@@ -735,10 +803,46 @@ def student_fee_summary(student_id, user, period=None, allow_parent=False):
         institution_id=student.institution_id, student_id=student.id, billing_period=period
     ).first()
     if invoice:
-        payload = invoice.to_dict()
+        credit_remaining = Decimal(invoice.applied_credit or 0)
+        subject_rows = []
+        for line in sorted(invoice.lines, key=lambda item: item.id):
+            expected = Decimal(line.net_amount or 0)
+            direct_paid = Decimal(line.paid_amount or 0)
+            credit_for_line = min(credit_remaining, max(ZERO, expected - direct_paid))
+            credit_remaining -= credit_for_line
+            paid = direct_paid + credit_for_line
+            balance = max(ZERO, expected - paid)
+            status = "PAID" if balance == ZERO else "PARTIALLY_PAID" if paid > ZERO else "UNPAID"
+            subject_rows.append({
+                "subject_id": line.subject_id,
+                "subject_name": line.subject_name,
+                "expected_fee": float(expected),
+                "fee_amount": float(expected),
+                "paid_amount": float(paid),
+                "balance": float(balance),
+                "balance_due": float(balance),
+                "status": status,
+            })
+        total_paid = Decimal(invoice.paid_amount or 0) + Decimal(invoice.applied_credit or 0)
+        if Decimal(invoice.balance_due or 0) == ZERO and subject_rows:
+            overall_status = "PAID"
+        elif total_paid > ZERO:
+            overall_status = "PARTIALLY_PAID"
+        else:
+            overall_status = "UNPAID"
+        payload = invoice.to_dict(include_lines=False)
         payload.update({
-            "overall_status": "PAID" if Decimal(invoice.balance_due or 0) == ZERO else "PENDING",
+            "student_name": student.user.full_name if student.user else None,
+            "billing_month": period,
+            "overall_status": overall_status,
+            "total_fee": float(Decimal(invoice.net_total or 0)),
+            "total_paid": float(total_paid),
+            "total_pending": float(Decimal(invoice.balance_due or 0)),
+            "paid_subject_count": sum(1 for row in subject_rows if row["status"] == "PAID"),
+            "pending_subject_count": sum(1 for row in subject_rows if row["status"] != "PAID"),
             "advance_credit": float(max(ZERO, _credit_balance(student.id, student.institution_id))),
+            "subjects": subject_rows,
+            "lines": subject_rows,
             "legacy": False,
         })
         return {"fee_summary": payload}, 200
@@ -747,11 +851,16 @@ def student_fee_summary(student_id, user, period=None, allow_parent=False):
     amount = float(legacy.amount or legacy.amount_due or 0) if legacy else 0
     return {"fee_summary": {
         "student_id": student.id, "billing_period": period,
-        "overall_status": "PAID" if paid else "PENDING",
+        "student_name": student.user.full_name if student.user else None,
+        "billing_month": period,
+        "overall_status": "PAID" if paid else "UNPAID",
         "subject_charges": amount, "net_total": amount,
         "paid_amount": amount if paid else 0, "balance_due": 0 if paid else amount,
+        "total_fee": amount, "total_paid": amount if paid else 0,
+        "total_pending": 0 if paid else amount,
+        "paid_subject_count": 0, "pending_subject_count": 0,
         "advance_credit": float(max(ZERO, _credit_balance(student.id, student.institution_id))),
-        "lines": [], "legacy": True, "legacy_message": "Legacy payment record; subject breakdown unavailable.",
+        "subjects": [], "lines": [], "legacy": True, "legacy_message": "Legacy payment record; subject breakdown unavailable.",
     }}, 200
 
 

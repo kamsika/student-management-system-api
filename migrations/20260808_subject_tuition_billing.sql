@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS subject_fees (
   id INT AUTO_INCREMENT PRIMARY KEY, institution_id INT NOT NULL, subject_id INT NOT NULL,
   monthly_fee DECIMAL(12,2) NOT NULL, currency VARCHAR(3) NOT NULL DEFAULT 'LKR',
   effective_from DATE NOT NULL, effective_to DATE NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  description TEXT NULL, created_by INT NOT NULL, created_at DATETIME NOT NULL,
+  description TEXT NULL, created_by INT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
   CONSTRAINT fk_subject_fee_institution FOREIGN KEY (institution_id) REFERENCES institutions(id),
   CONSTRAINT fk_subject_fee_subject FOREIGN KEY (subject_id) REFERENCES subjects(id),
   CONSTRAINT fk_subject_fee_creator FOREIGN KEY (created_by) REFERENCES users(id),
@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS invoice_line_items (
   paid_amount DECIMAL(12,2) NOT NULL DEFAULT 0, status VARCHAR(24) NOT NULL DEFAULT 'UNPAID',
   FOREIGN KEY (invoice_id) REFERENCES monthly_invoices(id), FOREIGN KEY (institution_id) REFERENCES institutions(id),
   FOREIGN KEY (enrollment_id) REFERENCES student_subject_enrollments(id), FOREIGN KEY (subject_id) REFERENCES subjects(id),
+  UNIQUE KEY uq_invoice_subject_line (invoice_id, subject_id),
   KEY ix_invoice_line_subject (institution_id, subject_id)
 ) ENGINE=InnoDB;
 
