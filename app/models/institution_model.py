@@ -24,7 +24,14 @@ class Institution(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), nullable=False)
     subdomain = db.Column(db.String(100), unique=True, nullable=False, index=True)
-    status = db.Column(db.Enum("Active", "Suspended", name="institution_status"), default="Active", nullable=False)
+    # Some existing databases contain legacy Archived institutions. Keep them
+    # readable so listing institutions does not fail while preserving the
+    # current Active/Suspended status workflow.
+    status = db.Column(
+        db.Enum("Active", "Suspended", "Archived", name="institution_status"),
+        default="Active",
+        nullable=False,
+    )
     created_at = db.Column(db.DateTime, default=utc_now, nullable=False)
     updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now, nullable=True)
 

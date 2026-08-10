@@ -15,6 +15,7 @@ from app.routes.admin_routes import admin_bp
 from app.routes.tenant_routes import tenant_bp
 from app.routes.tuition_routes import tuition_bp
 from app.routes.super_admin_routes import super_admin_bp
+from app.routes.feedback_routes import feedback_bp
 
 __all__ = [
     "auth_bp",
@@ -34,4 +35,5 @@ __all__ = [
     "tuition_bp",
     "admin_bp",
     "super_admin_bp",
+    "feedback_bp",
 ]

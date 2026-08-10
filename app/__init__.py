@@ -11,6 +11,7 @@ from app.routes import (
     auth_bp,
     classroom_bp,
     face_bp,
+    feedback_bp,
     institution_bp,
     parent_bp,
     payment_bp,
@@ -82,6 +83,7 @@ def create_app(config_class=Config):
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(face_bp)
+    app.register_blueprint(feedback_bp)
     app.register_blueprint(institution_bp)
     app.register_blueprint(classroom_bp)
     app.register_blueprint(attendance_bp)

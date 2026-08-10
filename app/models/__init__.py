@@ -10,6 +10,7 @@ from app.models.timetable_model import Timetable
 from app.models.student_payment_model import StudentPayment
 from app.models.subject_model import Subject
 from app.models.face_data_model import FaceData
+from app.models.institution_feedback_model import InstitutionFeedback
 from app.models.tuition_billing_model import (
     AdvanceCreditLedger,
     FeeReceipt,
@@ -35,6 +36,7 @@ __all__ = [
     "StudentPayment",
     "Subject",
     "FaceData",
+    "InstitutionFeedback",
     "SubjectFee",
     "StudentSubjectEnrollment",
     "MonthlyInvoice",
