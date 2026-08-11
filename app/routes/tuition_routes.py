@@ -35,27 +35,27 @@ tuition_bp = Blueprint("tuition", __name__, url_prefix="/api/tuition")
 def subject_fees():
     return list_subject_fees(
         get_current_user(), request.args.get("subject_id"), request.args.get("history") == "true",
-        request.args.get("search"), request.args.get("status"),
+        request.args.get("search"), request.args.get("status"), request.args.get("grade"),
     )
 
 
 @tuition_bp.post("/subjects/<int:subject_id>/fees")
 @jwt_required()
-@role_required("institution_admin", "teacher")
+@role_required("institution_admin")
 def configure_fee(subject_id):
     return configure_subject_fee(subject_id, request.get_json(silent=True) or {}, get_current_user())
 
 
 @tuition_bp.put("/subject-fees/<int:fee_id>")
 @jwt_required()
-@role_required("institution_admin", "teacher")
+@role_required("institution_admin")
 def update_fee(fee_id):
     return update_subject_fee(fee_id, request.get_json(silent=True) or {}, get_current_user())
 
 
 @tuition_bp.delete("/subject-fees/<int:fee_id>")
 @jwt_required()
-@role_required("institution_admin", "teacher")
+@role_required("institution_admin")
 def delete_fee(fee_id):
     return delete_subject_fee(fee_id, get_current_user())
 

@@ -17,6 +17,7 @@ class SubjectFee(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     institution_id = db.Column(db.Integer, db.ForeignKey("institutions.id"), nullable=False, index=True)
     subject_id = db.Column(db.Integer, db.ForeignKey("subjects.id"), nullable=False, index=True)
+    grade = db.Column(db.String(50), nullable=True, index=True)
     monthly_fee = db.Column(db.Numeric(12, 2), nullable=False)
     currency = db.Column(db.String(3), nullable=False, default="LKR", server_default="LKR")
     effective_from = db.Column(db.Date, nullable=False, index=True)
@@ -31,7 +32,7 @@ class SubjectFee(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint(
-            "institution_id", "subject_id", "effective_from", name="uq_subject_fee_effective"
+            "institution_id", "grade", "subject_id", "effective_from", name="uq_subject_fee_grade_effective"
         ),
         db.Index("ix_subject_fee_lookup", "institution_id", "subject_id", "effective_from", "effective_to"),
     )
@@ -43,6 +44,7 @@ class SubjectFee(db.Model):
             "subject_id": self.subject_id,
             "subjectId": self.subject_id,
             "subject_name": self.subject.name if self.subject else None,
+            "grade": self.grade,
             "subjectName": self.subject.name if self.subject else None,
             "monthly_fee": money(self.monthly_fee),
             "monthlyFee": money(self.monthly_fee),

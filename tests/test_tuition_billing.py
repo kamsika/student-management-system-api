@@ -133,6 +133,34 @@ def test_cross_institution_fee_access_is_denied(billing_data):
     assert status == 404
 
 
+def test_same_subject_supports_different_grade_fees(billing_data):
+    for grade, amount in (("6", "1500"), ("7", "1800"), ("8", "2000")):
+        result, status = tuition_controller.configure_subject_fee(
+            billing_data["subject"].id,
+            {"grade": grade, "monthly_fee": amount, "effective_from": "2026-08-01"},
+            billing_data["admin"],
+        )
+        assert status == 201, result
+    grade_8 = tuition_controller.current_subject_fee(
+        billing_data["subject"].id, billing_data["admin"].institution_id,
+        date(2026, 8, 1), "8",
+    )
+    assert grade_8.monthly_fee == Decimal("2000.00")
+
+
+def test_subject_payment_requires_student_enrollment(billing_data):
+    science = Subject(institution_id=billing_data["admin"].institution_id, name="Science")
+    db.session.add(science)
+    db.session.commit()
+    result, status = tuition_controller.record_tuition_payment(
+        {"student_id": billing_data["student"].id, "subject_id": science.id,
+         "amount": "500", "payment_method": "CASH", "billing_period": "2026-08"},
+        billing_data["teacher"], "not-enrolled",
+    )
+    assert status == 400
+    assert "not enrolled" in result["errors"][0]
+
+
 def test_registration_preview_totals_and_discount(billing_data):
     _configure_and_enroll(billing_data)
     preview = tuition_controller.fee_preview(

@@ -102,7 +102,7 @@ def _audit(user, action, entity_type, entity_id=None, details=None, institution_
     )
 
 
-def current_subject_fee(subject_id, institution_id, on_date=None):
+def current_subject_fee(subject_id, institution_id, on_date=None, grade=None):
     target = on_date or local_today()
     return (
         SubjectFee.query.filter(
@@ -111,22 +111,28 @@ def current_subject_fee(subject_id, institution_id, on_date=None):
             SubjectFee.effective_from <= target,
             or_(SubjectFee.effective_to.is_(None), SubjectFee.effective_to >= target),
             SubjectFee.is_active.is_(True),
+            or_(SubjectFee.grade == str(grade).strip(), SubjectFee.grade.is_(None)) if grade else SubjectFee.grade.is_(None),
         )
-        .order_by(SubjectFee.effective_from.desc(), SubjectFee.id.desc())
+        .order_by(SubjectFee.grade.is_(None).asc(), SubjectFee.effective_from.desc(), SubjectFee.id.desc())
         .first()
     )
 
 
-def list_subject_fees(user, subject_id=None, history=False, search=None, status=None):
+def list_subject_fees(user, subject_id=None, history=False, search=None, status=None, grade=None):
     if user.role not in ("institution_admin", "teacher", "super_admin"):
         return {"errors": ["Access denied"]}, 403
-    query = SubjectFee.query
+    query = SubjectFee.query.join(Subject, Subject.id == SubjectFee.subject_id)
     if user.role != "super_admin":
         query = query.filter_by(institution_id=user.institution_id)
     if subject_id:
         query = query.filter_by(subject_id=int(subject_id))
+    if grade:
+        query = query.filter(SubjectFee.grade == str(grade).strip())
     if search:
-        query = query.join(Subject).filter(func.lower(Subject.name).like(f"%{str(search).strip().lower()}%"))
+        term = f"%{str(search).strip().lower()}%"
+        query = query.filter(
+            or_(func.lower(Subject.name).like(term), func.lower(SubjectFee.grade).like(term))
+        )
     if status and str(status).lower() != "all":
         query = query.filter(SubjectFee.is_active.is_(str(status).lower() == "active"))
     if not history:
@@ -136,7 +142,9 @@ def list_subject_fees(user, subject_id=None, history=False, search=None, status=
             or_(SubjectFee.effective_to.is_(None), SubjectFee.effective_to >= today),
             SubjectFee.is_active.is_(True),
         )
-    rows = query.order_by(SubjectFee.subject_id.asc(), SubjectFee.effective_from.desc()).all()
+    rows = query.order_by(
+        SubjectFee.grade.asc(), Subject.name.asc(), SubjectFee.effective_from.desc()
+    ).all()
     return {"subject_fees": [row.to_dict() for row in rows]}, 200
 
 
@@ -147,14 +155,17 @@ def configure_subject_fee(subject_id, data, user):
     if not subject:
         return {"errors": ["Subject not found"]}, 404
     amount = _decimal(data.get("monthly_fee", data.get("monthlyFee")))
-    if amount is None or amount < ZERO:
-        return {"errors": ["monthly_fee must be zero or greater"]}, 400
+    # Null grade is retained only for compatibility with existing subject-only
+    # fee records/clients. The current admin UI always supplies a grade.
+    grade = str(data.get("grade") or "").strip() or None
+    if amount is None or amount <= ZERO:
+        return {"errors": ["monthly_fee must be greater than zero"]}, 400
     effective = _parse_date(data.get("effective_from", data.get("effectiveFrom")), local_today().replace(day=1))
     if not effective:
         return {"errors": ["effective_from must be a valid date"]}, 400
     effective = effective.replace(day=1)
     if SubjectFee.query.filter_by(
-        institution_id=user.institution_id, subject_id=subject.id, effective_from=effective
+        institution_id=user.institution_id, grade=grade, subject_id=subject.id, effective_from=effective
     ).first():
         return {"errors": ["A fee already starts in this month"]}, 409
 
@@ -162,6 +173,7 @@ def configure_subject_fee(subject_id, data, user):
         SubjectFee.query.filter(
             SubjectFee.institution_id == user.institution_id,
             SubjectFee.subject_id == subject.id,
+            SubjectFee.grade == grade,
             SubjectFee.effective_from < effective,
         ).order_by(SubjectFee.effective_from.desc()).first()
     )
@@ -169,12 +181,14 @@ def configure_subject_fee(subject_id, data, user):
         SubjectFee.query.filter(
             SubjectFee.institution_id == user.institution_id,
             SubjectFee.subject_id == subject.id,
+            SubjectFee.grade == grade,
             SubjectFee.effective_from > effective,
         ).order_by(SubjectFee.effective_from.asc()).first()
     )
     row = SubjectFee(
         institution_id=user.institution_id,
         subject_id=subject.id,
+        grade=grade,
         monthly_fee=amount,
         currency=str(data.get("currency") or "LKR").upper()[:3],
         effective_from=effective,
@@ -206,22 +220,25 @@ def update_subject_fee(fee_id, data, user):
         institution_id=user.institution_id, subject_id=fee.subject_id
     ).first() is not None
     amount_raw = data.get("monthly_fee", data.get("monthlyFee"))
+    grade = str(data.get("grade", fee.grade) or "").strip() or None
     amount = _decimal(amount_raw, default=Decimal(fee.monthly_fee))
     effective = _parse_date(
         data.get("effective_from", data.get("effectiveFrom")), fee.effective_from
     )
-    if amount is None or amount < ZERO or not effective:
+    if amount is None or amount <= ZERO or not effective:
         return {"errors": ["Invalid monthly fee or effective date"]}, 400
     effective = effective.replace(day=1)
     if used and (amount != Decimal(fee.monthly_fee) or effective != fee.effective_from):
         return configure_subject_fee(fee.subject_id, {
             "monthly_fee": str(amount),
+            "grade": grade,
             "currency": data.get("currency", fee.currency),
             "effective_from": effective.isoformat(),
             "is_active": data.get("is_active", data.get("isActive", True)),
             "description": data.get("description", fee.description),
         }, user)
     fee.monthly_fee = amount
+    fee.grade = grade
     fee.currency = str(data.get("currency") or fee.currency).upper()[:3]
     fee.effective_from = effective
     if "is_active" in data or "isActive" in data:
@@ -260,7 +277,7 @@ def delete_subject_fee(fee_id, user):
     return {"subject_fee": payload, "deleted": True, "deactivated": False}, 200
 
 
-def fee_preview(subject_names, institution_id, joining_date=None, discount=ZERO):
+def fee_preview(subject_names, institution_id, joining_date=None, discount=ZERO, grade=None):
     target = joining_date or local_today()
     names = {str(name).strip().lower() for name in (subject_names or []) if str(name).strip()}
     subjects = Subject.query.filter_by(institution_id=institution_id).all()
@@ -268,7 +285,7 @@ def fee_preview(subject_names, institution_id, joining_date=None, discount=ZERO)
     lines = []
     total = ZERO
     for subject in matched:
-        fee = current_subject_fee(subject.id, institution_id, target)
+        fee = current_subject_fee(subject.id, institution_id, target, grade)
         amount = Decimal(fee.monthly_fee) if fee else None
         if amount is not None:
             total += amount
@@ -297,7 +314,7 @@ def preview_registration_fees(data, user):
     discount = _decimal(data.get("discount", data.get("discount_amount", 0)), default=ZERO)
     if not joining or discount is None or discount < ZERO:
         return {"errors": ["Invalid joining date or discount"]}, 400
-    return fee_preview(data.get("subjects") or data.get("enrolledSubjects") or [], user.institution_id, joining, discount), 200
+    return fee_preview(data.get("subjects") or data.get("enrolledSubjects") or [], user.institution_id, joining, discount, data.get("grade")), 200
 
 
 def add_enrollment_snapshots(student, subject_names, user, joining_date=None, discount=ZERO):
@@ -308,7 +325,7 @@ def add_enrollment_snapshots(student, subject_names, user, joining_date=None, di
     for subject in sorted(subjects, key=lambda item: item.id):
         if subject.name.strip().lower() not in names:
             continue
-        fee = current_subject_fee(subject.id, student.institution_id, start)
+        fee = current_subject_fee(subject.id, student.institution_id, start, student.grade)
         fee_amount = Decimal(fee.monthly_fee) if fee else ZERO
         subject_discount = min(fee_amount, remaining_discount)
         remaining_discount -= subject_discount
@@ -401,7 +418,7 @@ def generate_invoice(student_id, period, user):
     db.session.flush()
     charges = discounts = ZERO
     for enrollment in enrollments:
-        fee = current_subject_fee(enrollment.subject_id, student.institution_id, start)
+        fee = current_subject_fee(enrollment.subject_id, student.institution_id, start, student.grade)
         amount = Decimal(fee.monthly_fee) if fee else Decimal(enrollment.fee_snapshot or 0)
         discount = min(amount, Decimal(enrollment.discount_amount or 0))
         net = amount - discount
@@ -525,6 +542,12 @@ def record_tuition_payment(data, user, idempotency_key=None):
         if not subject:
             return {"errors": ["Subject not found"]}, 404
         subject_id = subject.id
+        enrollment = StudentSubjectEnrollment.query.filter_by(
+            institution_id=user.institution_id, student_id=student.id,
+            subject_id=subject_id, is_active=True,
+        ).first()
+        if not enrollment:
+            return {"errors": ["Student is not enrolled in this subject"]}, 400
     raw_period = data.get("billing_period", data.get("billingPeriod"))
     requested_period = _period(raw_period) if raw_period else None
     if raw_period and not requested_period:
