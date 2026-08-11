@@ -9,7 +9,12 @@ load_dotenv()
 def build_database_url():
     # Railway's MySQL service exposes MYSQL_URL. DATABASE_URL remains the
     # preferred generic option for local development and other providers.
-    explicit_url = (os.getenv("DATABASE_URL") or os.getenv("MYSQL_URL") or "").strip()
+    explicit_url = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("MYSQL_PUBLIC_URL")
+        or os.getenv("MYSQL_URL")
+        or ""
+    ).strip()
     if explicit_url:
         # SQLAlchemy needs the PyMySQL driver explicitly when Railway returns
         # a plain mysql:// URL.

@@ -31,25 +31,19 @@ scheduler = BackgroundScheduler()
 
 
 def _ensure_database_exists(app):
-    import os
-    from urllib.parse import quote_plus
-
     import pymysql
+    from sqlalchemy.engine import make_url
 
-    db_name = os.getenv("DB_NAME") or os.getenv("MYSQLDATABASE")
+    database_url = make_url(app.config["SQLALCHEMY_DATABASE_URI"])
+    db_name = database_url.database
     if not db_name:
         return
 
-    user = os.getenv("DB_USER") or os.getenv("MYSQLUSER", "root")
-    password = os.getenv("DB_PASSWORD") or os.getenv("MYSQLPASSWORD", "")
-    host = os.getenv("DB_HOST") or os.getenv("MYSQLHOST", "localhost")
-    port = int(os.getenv("DB_PORT") or os.getenv("MYSQLPORT", "3306"))
-
     connection = pymysql.connect(
-        host=host,
-        user=user,
-        password=password,
-        port=port,
+        host=database_url.host or "localhost",
+        user=database_url.username or "root",
+        password=database_url.password or "",
+        port=database_url.port or 3306,
         charset="utf8mb4",
     )
     try:
